@@ -40,8 +40,8 @@ pub fn draw(f: &mut Frame, app: &App, config: &Config) {
     let items: Vec<ListItem> = app
         .filtered_indices
         .iter()
-        .filter_map(|&idx| app.instances.get(idx))
-        .map(|inst| {
+        .filter_map(|&idx| app.instances.get(idx).map(|inst| (idx, inst)))
+        .map(|(idx, inst)| {
             let (icon, status_color) = match inst.status {
                 Status::Working => ("●", Color::Green),
                 Status::Waiting => ("◐", Color::Yellow),
@@ -54,12 +54,20 @@ pub fn draw(f: &mut Frame, app: &App, config: &Config) {
                 Status::Idle => "idle",
                 Status::Error => "error",
             };
+            let keyword_tag = app
+                .min_keywords
+                .get(idx)
+                .map(|k| format!(" [{}]", k))
+                .unwrap_or_default();
             let mut spans = vec![
                 Span::styled(format!("  {} ", icon), Style::default().fg(status_color)),
-                Span::styled(
-                    format!("{:<20}", inst.project),
-                    Style::default().fg(Color::White),
-                ),
+                Span::styled(inst.project.clone(), Style::default().fg(Color::White)),
+                Span::styled(keyword_tag.clone(), Style::default().fg(Color::Cyan)),
+                Span::raw(format!(
+                    "{:>width$}",
+                    "",
+                    width = 28usize.saturating_sub(inst.project.len() + keyword_tag.len())
+                )),
                 Span::styled(
                     format!("{:<10}", status_label),
                     Style::default().fg(status_color),
@@ -109,15 +117,13 @@ pub fn draw(f: &mut Frame, app: &App, config: &Config) {
         .map(|i| format!(" Preview: {} ({}) ", i.project, i.position))
         .unwrap_or_else(|| " Preview ".to_string());
 
-    let preview_text = app
-        .preview
-        .as_bytes()
-        .into_text()
-        .unwrap_or_default();
+    let preview_text = app.preview.as_bytes().into_text().unwrap_or_default();
 
     let preview_height = chunks[1].height.saturating_sub(2).max(1) as usize;
     let total_lines = preview_text.lines.len();
-    let scroll_offset = total_lines.saturating_sub(preview_height) as u16;
+    let scroll_offset = total_lines
+        .saturating_sub(preview_height)
+        .min(u16::MAX as usize) as u16;
 
     let preview = Paragraph::new(preview_text)
         .block(

@@ -2,6 +2,7 @@
 name = "claude-panes"
 version = "0.1.0"
 edition = "2021"
+rust-version = "1.70"
 description = "TUI dashboard to monitor and switch between Claude Code tmux sessions"
 license = "MIT"
 repository = "https://github.com/gunubin/claude-panes"
@@ -19,3 +20,6 @@ serde = { version = "1", features = ["derive"] }
 toml = "0.8"
 dirs = "6"
 unicode-width = "0.2"
+
+[dev-dependencies]
+filetime = "0.2"

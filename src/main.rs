@@ -8,10 +8,10 @@ use std::io;
 use std::time::Duration;
 
 use crossterm::event::{self, Event, KeyCode, KeyEventKind};
+use crossterm::execute;
 use crossterm::terminal::{
     disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
 };
-use crossterm::execute;
 use ratatui::backend::CrosstermBackend;
 use ratatui::Terminal;
 
@@ -71,6 +71,10 @@ fn run_app(
     loop {
         terminal.draw(|f| ui::draw(f, &app, config))?;
 
+        if app.should_quit {
+            break;
+        }
+
         // Auto-refresh every 1 second
         if last_refresh.elapsed() >= Duration::from_secs(1) {
             app.refresh();
@@ -99,10 +103,6 @@ fn run_app(
                     }
                 }
             }
-        }
-
-        if app.should_quit {
-            break;
         }
     }
 

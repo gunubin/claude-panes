@@ -44,11 +44,7 @@ impl Config {
             Ok(s) => s,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Self::default(),
             Err(e) => {
-                eprintln!(
-                    "Warning: could not read config {}: {}",
-                    path.display(),
-                    e
-                );
+                eprintln!("Warning: could not read config {}: {}", path.display(), e);
                 return Self::default();
             }
         };
@@ -56,11 +52,7 @@ impl Config {
         let raw: RawConfig = match toml::from_str(&content) {
             Ok(r) => r,
             Err(e) => {
-                eprintln!(
-                    "Warning: invalid config {}: {}",
-                    path.display(),
-                    e
-                );
+                eprintln!("Warning: invalid config {}: {}", path.display(), e);
                 return Self::default();
             }
         };
@@ -76,17 +68,15 @@ impl Config {
             .and_then(|l| l.preview_percentage)
             .unwrap_or(70);
 
-        let (list_percentage, preview_percentage) = if list_pct + preview_pct <= 100
-            && list_pct > 0
-            && preview_pct > 0
-        {
-            (list_pct, preview_pct)
-        } else {
-            eprintln!(
+        let (list_percentage, preview_percentage) =
+            if list_pct + preview_pct <= 100 && list_pct > 0 && preview_pct > 0 {
+                (list_pct, preview_pct)
+            } else {
+                eprintln!(
                 "Warning: layout percentages must sum to <=100 and be >0, using defaults (30/70)"
             );
-            (30, 70)
-        };
+                (30, 70)
+            };
 
         Self {
             border_color: parse_color(raw.border_color.as_deref().unwrap_or("cyan")),

@@ -1,6 +1,7 @@
 use glob::glob;
 use std::collections::HashMap;
 use std::fs;
+use std::path::Path;
 use std::process::Command;
 use std::time::{Duration, SystemTime};
 
@@ -28,11 +29,7 @@ pub struct ClaudeInstance {
 /// Read all pane-* state files from /tmp/claude-tmux/
 /// Returns None when tmux is temporarily unavailable (caller should keep stale data).
 pub fn read_state_files() -> Option<Vec<ClaudeInstance>> {
-    let pane_map = match build_pane_position_map() {
-        Some(map) => map,
-        None => return None, // tmux unavailable, signal caller to keep stale data
-    };
-    let mut pane_map = pane_map;
+    let mut pane_map = build_pane_position_map()?;
 
     let mut instances = Vec::new();
     let pattern = "/tmp/claude-tmux/pane-%*";
@@ -42,6 +39,11 @@ pub fn read_state_files() -> Option<Vec<ClaudeInstance>> {
     };
 
     for entry in paths.flatten() {
+        // Reject symlinks to prevent /tmp symlink attacks
+        if is_symlink(&entry) {
+            continue;
+        }
+
         let Some(filename) = entry.file_name() else {
             continue;
         };
@@ -68,6 +70,7 @@ pub fn read_state_files() -> Option<Vec<ClaudeInstance>> {
         let (status, project) = parse_pane_content(content);
         // Skip panes that no longer exist in tmux
         let Some((command, position)) = pane_map.remove(&pane_id) else {
+            let _ = fs::remove_file(&entry); // Clean up orphaned state file
             continue;
         };
 
@@ -78,6 +81,9 @@ pub fn read_state_files() -> Option<Vec<ClaudeInstance>> {
         let status = if (status == Status::Working || status == Status::Waiting)
             && (is_shell(&command) || is_stale_mtime(&entry))
         {
+            // Rewrite state file so that hook's update_window_if_active
+            // will sync the corrected status to tmux window name
+            let _ = fs::write(&entry, format!("○ {}", project));
             Status::Idle
         } else {
             status
@@ -156,11 +162,8 @@ fn build_pane_position_map() -> Option<HashMap<String, (String, String)>> {
 /// Rejects symlinks to prevent symlink attacks on /tmp.
 fn read_last_prompt(pane_id: &str) -> String {
     let path = format!("/tmp/claude-tmux/prompt-{}", pane_id);
-    // Reject symlinks to prevent reading arbitrary files
-    match fs::symlink_metadata(&path) {
-        Ok(meta) if meta.file_type().is_symlink() => return String::new(),
-        Err(_) => return String::new(),
-        Ok(_) => {}
+    if is_symlink(path.as_ref()) {
+        return String::new();
     }
     fs::read_to_string(&path)
         .map(|s| s.trim().to_string())
@@ -168,7 +171,18 @@ fn read_last_prompt(pane_id: &str) -> String {
 }
 
 fn is_shell(command: &str) -> bool {
-    matches!(command, "fish" | "bash" | "zsh")
+    matches!(
+        command,
+        "fish" | "bash" | "zsh" | "sh" | "dash" | "-bash" | "-zsh" | "-fish"
+    )
+}
+
+/// Check if a path is a symlink (or unreadable).
+fn is_symlink(path: &Path) -> bool {
+    match fs::symlink_metadata(path) {
+        Ok(meta) => meta.file_type().is_symlink(),
+        Err(_) => true, // Treat unreadable as unsafe
+    }
 }
 
 /// Check if the state file's mtime is older than STALE_THRESHOLD.
@@ -176,11 +190,157 @@ fn is_shell(command: &str) -> bool {
 /// means Claude Code has stopped working (even if Stop hook didn't fire).
 /// Returns false on errors (better to show "working" than to incorrectly
 /// flip to "idle" due to a transient filesystem error).
-fn is_stale_mtime(path: &std::path::Path) -> bool {
+fn is_stale_mtime(path: &Path) -> bool {
     fs::metadata(path)
         .and_then(|m| m.modified())
         .ok()
         .and_then(|mtime| SystemTime::now().duration_since(mtime).ok())
         .map(|age| age > STALE_THRESHOLD)
         .unwrap_or(false)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // --- parse_pane_content ---
+
+    #[test]
+    fn parse_working() {
+        let (status, project) = parse_pane_content("● my-project");
+        assert_eq!(status, Status::Working);
+        assert_eq!(project, "my-project");
+    }
+
+    #[test]
+    fn parse_waiting() {
+        let (status, project) = parse_pane_content("◐ my-project");
+        assert_eq!(status, Status::Waiting);
+        assert_eq!(project, "my-project");
+    }
+
+    #[test]
+    fn parse_idle() {
+        let (status, project) = parse_pane_content("○ my-project");
+        assert_eq!(status, Status::Idle);
+        assert_eq!(project, "my-project");
+    }
+
+    #[test]
+    fn parse_error() {
+        let (status, project) = parse_pane_content("✕ my-project");
+        assert_eq!(status, Status::Error);
+        assert_eq!(project, "my-project");
+    }
+
+    #[test]
+    fn parse_nerd_font_working() {
+        let (status, project) = parse_pane_content("󰑮 my-project");
+        assert_eq!(status, Status::Working);
+        assert_eq!(project, "my-project");
+    }
+
+    #[test]
+    fn parse_nerd_font_idle() {
+        let (status, project) = parse_pane_content("󰭻 my-project");
+        assert_eq!(status, Status::Idle);
+        assert_eq!(project, "my-project");
+    }
+
+    #[test]
+    fn parse_fallback_no_prefix() {
+        let (status, project) = parse_pane_content("bare-project");
+        assert_eq!(status, Status::Idle);
+        assert_eq!(project, "bare-project");
+    }
+
+    #[test]
+    fn parse_empty_project_name() {
+        let (status, project) = parse_pane_content("● ");
+        assert_eq!(status, Status::Working);
+        assert_eq!(project, "");
+    }
+
+    // --- is_shell ---
+
+    #[test]
+    fn shell_known_shells() {
+        for shell in ["fish", "bash", "zsh", "sh", "dash"] {
+            assert!(is_shell(shell), "{} should be recognized as shell", shell);
+        }
+    }
+
+    #[test]
+    fn shell_login_shells() {
+        for shell in ["-bash", "-zsh", "-fish"] {
+            assert!(
+                is_shell(shell),
+                "{} should be recognized as login shell",
+                shell
+            );
+        }
+    }
+
+    #[test]
+    fn shell_non_shells() {
+        for cmd in ["node", "python", "claude", "2.1.42", "Fish", "BASH", ""] {
+            assert!(
+                !is_shell(cmd),
+                "{:?} should not be recognized as shell",
+                cmd
+            );
+        }
+    }
+
+    // --- is_stale_mtime ---
+
+    #[test]
+    fn stale_fresh_file() {
+        let dir = std::env::temp_dir().join("claude-panes-test-fresh");
+        let _ = fs::create_dir_all(&dir);
+        let path = dir.join("fresh");
+        fs::write(&path, "test").unwrap();
+        assert!(!is_stale_mtime(&path));
+        let _ = fs::remove_file(&path);
+        let _ = fs::remove_dir(&dir);
+    }
+
+    #[test]
+    fn stale_old_file() {
+        let dir = std::env::temp_dir().join("claude-panes-test-old");
+        let _ = fs::create_dir_all(&dir);
+        let path = dir.join("old");
+        // Create file, then set mtime to 60 seconds ago
+        let file = fs::File::create(&path).unwrap();
+        drop(file);
+        let old_time =
+            filetime::FileTime::from_system_time(SystemTime::now() - Duration::from_secs(60));
+        filetime::set_file_mtime(&path, old_time).unwrap();
+        assert!(is_stale_mtime(&path));
+        let _ = fs::remove_file(&path);
+        let _ = fs::remove_dir(&dir);
+    }
+
+    #[test]
+    fn stale_nonexistent_file() {
+        assert!(!is_stale_mtime(Path::new("/tmp/claude-panes-nonexistent")));
+    }
+
+    // --- is_symlink ---
+
+    #[test]
+    fn symlink_regular_file() {
+        let dir = std::env::temp_dir().join("claude-panes-test-symlink");
+        let _ = fs::create_dir_all(&dir);
+        let path = dir.join("regular");
+        fs::write(&path, "test").unwrap();
+        assert!(!is_symlink(&path));
+        let _ = fs::remove_file(&path);
+        let _ = fs::remove_dir(&dir);
+    }
+
+    #[test]
+    fn symlink_nonexistent() {
+        assert!(is_symlink(Path::new("/tmp/claude-panes-nonexistent")));
+    }
 }

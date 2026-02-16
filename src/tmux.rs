@@ -9,17 +9,16 @@ pub fn check_available() -> Result<(), String> {
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(format!(
-            "not inside a tmux session: {}",
-            stderr.trim()
-        ));
+        return Err(format!("not inside a tmux session: {}", stderr.trim()));
     }
     Ok(())
 }
 
 /// Validate that a pane ID looks like %<number>
 pub fn is_valid_pane_id(pane_id: &str) -> bool {
-    pane_id.starts_with('%') && pane_id.len() > 1 && pane_id[1..].bytes().all(|b| b.is_ascii_digit())
+    pane_id.starts_with('%')
+        && pane_id.len() > 1
+        && pane_id[1..].bytes().all(|b| b.is_ascii_digit())
 }
 
 /// Capture the last N lines of a tmux pane's output
@@ -77,6 +76,74 @@ fn strip_claude_status(text: &str) -> String {
 fn is_horizontal_bar(line: &str) -> bool {
     // 20+ consecutive ─ (U+2500) is a Claude Code UI separator
     line.contains("────────────────────")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // --- is_valid_pane_id ---
+
+    #[test]
+    fn valid_pane_ids() {
+        assert!(is_valid_pane_id("%0"));
+        assert!(is_valid_pane_id("%1"));
+        assert!(is_valid_pane_id("%123"));
+        assert!(is_valid_pane_id("%999999"));
+    }
+
+    #[test]
+    fn invalid_pane_ids() {
+        assert!(!is_valid_pane_id(""));
+        assert!(!is_valid_pane_id("%"));
+        assert!(!is_valid_pane_id("0"));
+        assert!(!is_valid_pane_id("%abc"));
+        assert!(!is_valid_pane_id("%12abc"));
+        assert!(!is_valid_pane_id("%%1"));
+        assert!(!is_valid_pane_id("%1 "));
+        assert!(!is_valid_pane_id("% 1"));
+        assert!(!is_valid_pane_id("%1;malicious"));
+        assert!(!is_valid_pane_id("%-1"));
+        assert!(!is_valid_pane_id("%1\0"));
+        assert!(!is_valid_pane_id("%1/../../etc"));
+    }
+
+    // --- strip_claude_status ---
+
+    #[test]
+    fn strip_no_bar() {
+        let text = "line1\nline2\nline3";
+        assert_eq!(strip_claude_status(text), text);
+    }
+
+    #[test]
+    fn strip_with_bar() {
+        let text = "output line 1\noutput line 2\n────────────────────────────\nstatus line";
+        assert_eq!(strip_claude_status(text), "output line 1\noutput line 2");
+    }
+
+    #[test]
+    fn strip_multiple_bars() {
+        let text =
+            "line1\n────────────────────────────\nmiddle\n────────────────────────────\nstatus";
+        assert_eq!(strip_claude_status(text), "line1");
+    }
+
+    #[test]
+    fn strip_empty() {
+        assert_eq!(strip_claude_status(""), "");
+    }
+
+    // --- is_horizontal_bar ---
+
+    #[test]
+    fn horizontal_bar_detection() {
+        assert!(is_horizontal_bar("────────────────────────────"));
+        assert!(is_horizontal_bar("  ────────────────────────────  "));
+        assert!(!is_horizontal_bar("───────────")); // too short
+        assert!(!is_horizontal_bar("--------------------")); // ASCII dashes
+        assert!(!is_horizontal_bar(""));
+    }
 }
 
 /// Get the current tmux pane ID
