@@ -81,6 +81,90 @@ fn is_horizontal_bar(line: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Mutex;
+
+    static ENV_MUTEX: Mutex<()> = Mutex::new(());
+
+    /// Run a closure with specific env vars set, then restore originals.
+    /// Uses a mutex to prevent parallel tests from interfering.
+    fn with_env_vars<F, R>(vars: &[(&str, Option<&str>)], f: F) -> R
+    where
+        F: FnOnce() -> R,
+    {
+        let _lock = ENV_MUTEX.lock().unwrap();
+        let originals: Vec<(&str, Option<String>)> = vars
+            .iter()
+            .map(|(key, _)| (*key, std::env::var(key).ok()))
+            .collect();
+        for (key, value) in vars {
+            match value {
+                Some(v) => std::env::set_var(key, v),
+                None => std::env::remove_var(key),
+            }
+        }
+        let result = f();
+        for (key, original) in &originals {
+            match original {
+                Some(v) => std::env::set_var(key, v),
+                None => std::env::remove_var(key),
+            }
+        }
+        result
+    }
+
+    // --- current_pane_id ---
+
+    #[test]
+    fn current_pane_id_prefers_caller_pane() {
+        with_env_vars(
+            &[
+                ("CLAUDE_PANES_CALLER_PANE", Some("%42")),
+                ("TMUX_PANE", Some("%99")),
+            ],
+            || {
+                assert_eq!(current_pane_id(), Some("%42".to_string()));
+            },
+        );
+    }
+
+    #[test]
+    fn current_pane_id_falls_back_to_tmux() {
+        with_env_vars(
+            &[
+                ("CLAUDE_PANES_CALLER_PANE", None),
+                ("TMUX_PANE", Some("%99")),
+            ],
+            || {
+                assert_eq!(current_pane_id(), Some("%99".to_string()));
+            },
+        );
+    }
+
+    #[test]
+    fn current_pane_id_skips_empty_caller() {
+        with_env_vars(
+            &[
+                ("CLAUDE_PANES_CALLER_PANE", Some("")),
+                ("TMUX_PANE", Some("%7")),
+            ],
+            || {
+                assert_eq!(current_pane_id(), Some("%7".to_string()));
+            },
+        );
+    }
+
+    #[test]
+    fn current_pane_id_none_when_unset() {
+        with_env_vars(
+            &[
+                ("CLAUDE_PANES_CALLER_PANE", None),
+                ("TMUX_PANE", None),
+            ],
+            || {
+                assert_eq!(current_pane_id(), None);
+            },
+        );
+    }
 
     // --- is_valid_pane_id ---
 
@@ -151,9 +235,9 @@ mod tests {
 /// over TMUX_PANE (which points to the popup's ephemeral pane).
 pub fn current_pane_id() -> Option<String> {
     std::env::var("CLAUDE_PANES_CALLER_PANE")
-        .or_else(|_| std::env::var("TMUX_PANE"))
         .ok()
         .filter(|s| !s.is_empty())
+        .or_else(|| std::env::var("TMUX_PANE").ok().filter(|s| !s.is_empty()))
 }
 
 /// Jump to a specific tmux pane (select window then pane)

@@ -1,23 +1,28 @@
 # claude-panes
 
-TUI dashboard to monitor and switch between Claude Code tmux sessions.
+**Monitor all your Claude Code tmux sessions from a single dashboard.**
 
 ![Rust](https://img.shields.io/badge/rust-stable-orange)
 ![License](https://img.shields.io/badge/license-MIT-blue)
 
+<!-- TODO: Add screenshot or GIF here -->
+
+## Why claude-panes?
+
+Running multiple Claude Code sessions in tmux makes it hard to know which instance is active, what it's working on, or whether it's stuck. claude-panes gives you a live dashboard to monitor and switch between all instances at a glance.
+
 ## Features
 
-- List all active Claude Code instances across tmux sessions
-- Live preview of pane output with ANSI color support
-- Show the last user prompt for each instance
-- Filter by project name
-- Jump directly to a pane with Enter
-- Auto-refresh every second
-- Auto-selects the current pane on startup
-- Detects stale "working" state via mtime heartbeat and foreground process check
-- Stable ordering by tmux pane position
-- Configurable layout, border color, and status stripping
-- Keeps stale data on transient tmux failures (no flickering)
+- **Multi-instance monitoring** -- List all active Claude Code instances across tmux sessions
+- **Live preview** -- Pane output with ANSI color support
+- **Last prompt display** -- See what each instance was asked
+- **Smart filtering** -- Type to filter by project name; shortest unique keywords (e.g. `m1`, `m2`) are auto-generated for quick selection
+- **Auto-jump** -- When filtering narrows to a single match, jumps automatically
+- **Quick navigation** -- Jump directly to any pane with Enter
+- **Auto-refresh** -- Updates every second with stable ordering
+- **Pane auto-select** -- Highlights the current pane on startup
+- **Stale detection** -- Detects when Claude has exited or stopped responding; pane title spinner detection prevents false "idle" during long thinking
+- **Configurable** -- Layout, border color, and status stripping via config file
 
 ## How It Works
 
@@ -25,14 +30,14 @@ TUI dashboard to monitor and switch between Claude Code tmux sessions.
 Claude Code hooks ──> /tmp/claude-tmux/pane-*   (status + project name)
                   ──> /tmp/claude-tmux/prompt-*  (last user prompt)
                           |
-claude-panes TUI <────────┼────────> tmux list-panes  (cross-reference)
+claude-panes TUI <--------+--------> tmux list-panes  (cross-reference + pane title)
                           |
                      tmux capture-pane  (live preview)
 ```
 
 1. Claude Code hooks write state files on session events (start, prompt, tool use, stop, end)
 2. claude-panes reads these files, cross-references with `tmux list-panes`, and displays a live dashboard
-3. Stale detection: if the state file's mtime is older than 30 seconds (no `PreToolUse` heartbeat) or the pane's foreground process is a shell, the instance is marked as idle
+3. Stale "working" status is corrected to "idle" when the foreground process is a shell (Claude exited) or the heartbeat has stopped (unless a pane title spinner indicates Claude is still thinking)
 
 ## Prerequisites
 
@@ -97,12 +102,13 @@ ICON_ERROR="✕"
 input=$(cat)
 event=$(echo "$input" | jq -r '.hook_event_name // "unknown"' 2>/dev/null)
 
-PANE_ID=$(tmux display-message -p '#{pane_id}')
+PANE_ID="$TMUX_PANE"
+[ -z "$PANE_ID" ] && exit 0
 STATE_DIR="/tmp/claude-tmux"
 PANE_FILE="$STATE_DIR/pane-${PANE_ID}"
 
-# Project name from current directory
-DIR_NAME=$(basename "$(tmux display-message -p '#{pane_current_path}')")
+# Project name from this pane's directory (-t ensures correct pane, not active pane)
+DIR_NAME=$(basename "$(tmux display-message -p -t "$PANE_ID" '#{pane_current_path}')")
 
 case "$event" in
     SessionStart)
@@ -158,12 +164,15 @@ Add the hooks section to `~/.claude/settings.json`:
 
 </details>
 
-### State file format
+<details>
+<summary>State file format</summary>
 
 | File | Format | Example |
 |------|--------|---------|
 | `/tmp/claude-tmux/pane-%<id>` | `<symbol> <project>` | `▶ my-project` (working), `● my-project` (waiting), `○ my-project` (idle), `✕ my-project` (error) |
 | `/tmp/claude-tmux/prompt-%<id>` | Plain text | `Fix the login bug` |
+
+</details>
 
 ## Usage
 
@@ -176,8 +185,10 @@ claude-panes
 Recommended: bind to a tmux key for quick access:
 
 ```tmux
-bind C-a display-popup -E -w 60% -h 70% "claude-panes"
+bind C-a display-popup -E -w 60% -h 70% "CLAUDE_PANES_CALLER_PANE=$TMUX_PANE claude-panes"
 ```
+
+> `CLAUDE_PANES_CALLER_PANE` tells claude-panes which pane launched the popup, so it can auto-select the correct instance.
 
 ### Keybindings
 
@@ -214,8 +225,17 @@ All fields are optional. Values shown above are the defaults.
 | No instances shown | Hook not writing state files | Run `claude-panes setup --check` to verify setup |
 | Icons show as boxes | Terminal doesn't support Unicode | Use a terminal with Unicode support (most modern terminals) |
 | Status always shows idle | PreToolUse heartbeat not configured | Run `claude-panes setup` to install all hooks |
+| Status flips to idle during long thinking | Claude thinks >30s without tool use and pane title has no spinner | Spinner detection mitigates this; some terminals may not expose pane title |
 | "not inside a tmux session" | Running outside tmux | Run `claude-panes` inside a tmux session |
 | Last prompt column is empty | No `UserPromptSubmit` hook or session not yet prompted | Add `UserPromptSubmit` hook; prompt will appear after next submission |
+
+## Contributing
+
+Contributions welcome! Fork, branch, and open a PR.
+
+```bash
+cargo test && cargo clippy && cargo fmt --check
+```
 
 ## License
 

@@ -43,7 +43,7 @@ pub fn draw(f: &mut Frame, app: &App, config: &Config) {
         .filter_map(|&idx| app.instances.get(idx).map(|inst| (idx, inst)))
         .map(|(idx, inst)| {
             let (icon, status_color, status_label) = match inst.status {
-                Status::Working => ("▶", Color::Green, "working"),
+                Status::Working => ("▶", Color::LightGreen, "working"),
                 Status::Waiting => ("●", Color::Yellow, "waiting"),
                 Status::Idle => ("○", Color::DarkGray, "idle"),
                 Status::Error => ("✕", Color::Red, "error"),

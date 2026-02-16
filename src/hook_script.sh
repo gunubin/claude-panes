@@ -11,12 +11,13 @@ ICON_ERROR="✕"
 input=$(cat)
 event=$(echo "$input" | jq -r '.hook_event_name // "unknown"' 2>/dev/null)
 
-PANE_ID=$(tmux display-message -p '#{pane_id}')
+PANE_ID="$TMUX_PANE"
+[ -z "$PANE_ID" ] && exit 0
 STATE_DIR="/tmp/claude-tmux"
 PANE_FILE="$STATE_DIR/pane-${PANE_ID}"
 
-# Project name from current directory
-DIR_NAME=$(basename "$(tmux display-message -p '#{pane_current_path}')")
+# Project name from this pane's directory (-t ensures correct pane, not active pane)
+DIR_NAME=$(basename "$(tmux display-message -p -t "$PANE_ID" '#{pane_current_path}')")
 
 case "$event" in
     SessionStart)

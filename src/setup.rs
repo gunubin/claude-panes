@@ -501,4 +501,34 @@ mod tests {
         assert_eq!(removed.len(), 5);
         assert_eq!(cleaned, original);
     }
+
+    // --- hook script icon/pane consistency ---
+
+    #[test]
+    fn hook_script_icons_match_parser() {
+        // Icons in the script must match what state.rs parse_pane_content() expects
+        assert!(HOOK_SCRIPT.contains("ICON_WORKING=\"▶\""), "missing ▶ icon");
+        assert!(HOOK_SCRIPT.contains("ICON_WAITING=\"●\""), "missing ● icon");
+        assert!(HOOK_SCRIPT.contains("ICON_IDLE=\"○\""), "missing ○ icon");
+        assert!(HOOK_SCRIPT.contains("ICON_ERROR=\"✕\""), "missing ✕ icon");
+    }
+
+    #[test]
+    fn hook_script_uses_tmux_pane_env() {
+        // Script should use $TMUX_PANE env var, not query tmux for pane_id
+        assert!(HOOK_SCRIPT.contains("$TMUX_PANE"), "should use $TMUX_PANE");
+        assert!(
+            !HOOK_SCRIPT.contains("display-message -p '#{pane_id}'"),
+            "should not query pane_id via display-message -p"
+        );
+    }
+
+    #[test]
+    fn hook_script_targets_pane_with_t_flag() {
+        // display-message must target specific pane with -t, not use default (active) pane
+        assert!(
+            HOOK_SCRIPT.contains("display-message -p -t \"$PANE_ID\""),
+            "should use -t flag to target specific pane"
+        );
+    }
 }

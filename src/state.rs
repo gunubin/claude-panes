@@ -69,7 +69,7 @@ pub fn read_state_files() -> Option<Vec<ClaudeInstance>> {
 
         let (status, project) = parse_pane_content(content);
         // Skip panes that no longer exist in tmux
-        let Some((command, position)) = pane_map.remove(&pane_id) else {
+        let Some((command, position, title)) = pane_map.remove(&pane_id) else {
             // Re-check symlink before destructive operation (defense-in-depth)
             if !is_symlink(&entry) {
                 let _ = fs::remove_file(&entry);
@@ -80,9 +80,11 @@ pub fn read_state_files() -> Option<Vec<ClaudeInstance>> {
         // Correct stale status:
         // Working/Waiting -> Idle when:
         // 1. Shell is foreground -> Claude Code has exited
-        // 2. State file mtime is too old -> PreToolUse heartbeat stopped
+        // 2. State file mtime is too old AND no active spinner in pane title
+        //    (spinner = Claude Code is still thinking, just not using tools)
         let status = if (status == Status::Working || status == Status::Waiting)
-            && (is_shell(&command) || is_stale_mtime(&entry))
+            && (is_shell(&command)
+                || (is_stale_mtime(&entry) && !is_active_spinner(&title)))
         {
             // Rewrite state file so next read reflects corrected status
             if !is_symlink(&entry) {
@@ -131,15 +133,15 @@ fn parse_pane_content(content: &str) -> (Status, String) {
     }
 }
 
-/// Run `tmux list-panes -a` to map pane IDs to (current_command, position).
+/// Run `tmux list-panes -a` to map pane IDs to (current_command, position, title).
 /// Returns None if tmux command fails (server unavailable).
-fn build_pane_position_map() -> Option<HashMap<String, (String, String)>> {
+fn build_pane_position_map() -> Option<HashMap<String, (String, String, String)>> {
     let output = Command::new("tmux")
         .args([
             "list-panes",
             "-a",
             "-F",
-            "#{pane_id} #{pane_current_command} #{session_name}:#{window_index}.#{pane_index}",
+            "#{pane_id} #{pane_current_command} #{session_name}:#{window_index}.#{pane_index} #{pane_title}",
         ])
         .output()
         .ok()?;
@@ -148,18 +150,23 @@ fn build_pane_position_map() -> Option<HashMap<String, (String, String)>> {
         return None;
     }
 
+    Some(parse_pane_list(&String::from_utf8_lossy(&output.stdout)))
+}
+
+/// Parse the output of `tmux list-panes -a -F "#{pane_id} #{pane_current_command} #{position} #{pane_title}"`.
+fn parse_pane_list(stdout: &str) -> HashMap<String, (String, String, String)> {
     let mut map = HashMap::new();
-    let stdout = String::from_utf8_lossy(&output.stdout);
     for line in stdout.lines() {
-        let parts: Vec<&str> = line.splitn(3, ' ').collect();
-        if parts.len() == 3 {
+        let parts: Vec<&str> = line.splitn(4, ' ').collect();
+        if parts.len() >= 3 {
+            let title = if parts.len() == 4 { parts[3] } else { "" };
             map.insert(
                 parts[0].to_string(),
-                (parts[1].to_string(), parts[2].to_string()),
+                (parts[1].to_string(), parts[2].to_string(), title.to_string()),
             );
         }
     }
-    Some(map)
+    map
 }
 
 /// Read the last user prompt from /tmp/claude-tmux/prompt-<pane_id>.
@@ -172,6 +179,14 @@ fn read_last_prompt(pane_id: &str) -> String {
     fs::read_to_string(&path)
         .map(|s| s.trim().to_string())
         .unwrap_or_default()
+}
+
+/// Check if the pane title contains a braille spinner character,
+/// indicating Claude Code is actively processing (thinking).
+fn is_active_spinner(title: &str) -> bool {
+    title
+        .chars()
+        .any(|c| matches!(c, '⠋' | '⠙' | '⠹' | '⠸' | '⠼' | '⠴' | '⠦' | '⠧' | '⠇' | '⠏'))
 }
 
 fn is_shell(command: &str) -> bool {
@@ -294,6 +309,79 @@ mod tests {
                 cmd
             );
         }
+    }
+
+    // --- parse_pane_list ---
+
+    #[test]
+    fn parse_pane_list_basic() {
+        let input = "%0 node 0:0.0 My Title\n%1 fish 1:0.0 Other\n";
+        let map = parse_pane_list(input);
+        assert_eq!(map.len(), 2);
+        assert_eq!(
+            map["%0"],
+            ("node".into(), "0:0.0".into(), "My Title".into())
+        );
+        assert_eq!(
+            map["%1"],
+            ("fish".into(), "1:0.0".into(), "Other".into())
+        );
+    }
+
+    #[test]
+    fn parse_pane_list_title_with_spaces() {
+        let input = "%5 claude 2:1.0 ⠋ Thinking about stuff\n";
+        let map = parse_pane_list(input);
+        assert_eq!(
+            map["%5"],
+            ("claude".into(), "2:1.0".into(), "⠋ Thinking about stuff".into())
+        );
+    }
+
+    #[test]
+    fn parse_pane_list_empty_title() {
+        // When pane_title is empty, tmux may output trailing space or not
+        let input = "%0 node 0:0.0 \n%1 fish 1:0.0\n";
+        let map = parse_pane_list(input);
+        assert_eq!(map.len(), 2);
+        assert_eq!(map["%0"].2, "");
+        assert_eq!(map["%1"].2, "");
+    }
+
+    #[test]
+    fn parse_pane_list_empty_input() {
+        let map = parse_pane_list("");
+        assert!(map.is_empty());
+    }
+
+    #[test]
+    fn parse_pane_list_malformed_lines() {
+        let input = "bad line\n%0 node\n%1 fish 0:0.0 ok\n";
+        let map = parse_pane_list(input);
+        assert_eq!(map.len(), 1);
+        assert_eq!(map["%1"].0, "fish");
+    }
+
+    // --- is_active_spinner ---
+
+    #[test]
+    fn spinner_detection_braille() {
+        for ch in ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'] {
+            let title = format!("⠋ claude-panes {}", ch);
+            assert!(is_active_spinner(&title), "should detect spinner char {}", ch);
+        }
+    }
+
+    #[test]
+    fn spinner_detection_empty() {
+        assert!(!is_active_spinner(""));
+    }
+
+    #[test]
+    fn spinner_detection_normal_title() {
+        assert!(!is_active_spinner("node"));
+        assert!(!is_active_spinner("fish /Users/koki"));
+        assert!(!is_active_spinner("claude-panes"));
     }
 
     // --- is_stale_mtime ---
