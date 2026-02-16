@@ -26,7 +26,7 @@ pub struct ClaudeInstance {
     pub last_prompt: String,
 }
 
-/// Read all pane-* state files from /tmp/claude-tmux/
+/// Read all pane-* state files from ~/.claude/pane-state/
 /// Returns None when tmux is temporarily unavailable (caller should keep stale data).
 /// Returns (instances, bell_pane_ids) where bell_pane_ids contains pane IDs with active bell flags.
 pub fn read_state_files() -> Option<(Vec<ClaudeInstance>, HashSet<String>)> {
@@ -34,8 +34,9 @@ pub fn read_state_files() -> Option<(Vec<ClaudeInstance>, HashSet<String>)> {
 
     let mut instances = Vec::new();
     let mut bell_ids = HashSet::new();
-    let pattern = "/tmp/claude-tmux/pane-%*";
-    let paths = match glob(pattern) {
+    let state_dir = state_dir();
+    let pattern = format!("{}/pane-%*", state_dir);
+    let paths = match glob(&pattern) {
         Ok(paths) => paths,
         Err(_) => return Some((Vec::new(), HashSet::new())),
     };
@@ -175,16 +176,18 @@ fn parse_pane_list(stdout: &str) -> HashMap<String, (String, String, String, boo
     map
 }
 
-/// Read the last user prompt from /tmp/claude-tmux/prompt-<pane_id>.
-/// Rejects symlinks to prevent symlink attacks on /tmp.
+/// Read the last user prompt from ~/.claude/pane-state/prompt-<pane_id>.
 fn read_last_prompt(pane_id: &str) -> String {
-    let path = format!("/tmp/claude-tmux/prompt-{}", pane_id);
-    if is_symlink(path.as_ref()) {
-        return String::new();
-    }
+    let path = format!("{}/prompt-{}", state_dir(), pane_id);
     fs::read_to_string(&path)
         .map(|s| s.trim().to_string())
         .unwrap_or_default()
+}
+
+/// Get the state directory path (~/.claude/pane-state).
+fn state_dir() -> String {
+    let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
+    format!("{}/.claude/pane-state", home)
 }
 
 /// Check if the pane title contains a braille spinner character,

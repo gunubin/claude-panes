@@ -13,7 +13,7 @@ event=$(echo "$input" | jq -r '.hook_event_name // "unknown"' 2>/dev/null)
 
 PANE_ID="$TMUX_PANE"
 [ -z "$PANE_ID" ] && exit 0
-STATE_DIR="/tmp/claude-tmux"
+STATE_DIR="$HOME/.claude/pane-state"
 PANE_FILE="$STATE_DIR/pane-${PANE_ID}"
 
 # Project name from this pane's directory (-t ensures correct pane, not active pane)
