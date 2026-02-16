@@ -50,9 +50,36 @@ cargo install --path .
 
 ## Hook Setup
 
-claude-panes requires Claude Code hooks to write state files. Add the following to your `~/.claude/settings.json`:
+claude-panes requires Claude Code hooks to write state files.
 
-### 1. Create the hook script
+### Automatic (recommended)
+
+```bash
+claude-panes setup
+```
+
+This will:
+1. Create `~/.claude/scripts/tmux-state.sh` with the hook script
+2. Add 5 hooks to `~/.claude/settings.json` (existing hooks are preserved)
+
+Verify the setup:
+
+```bash
+claude-panes setup --check
+```
+
+To remove hooks and script:
+
+```bash
+claude-panes setup --uninstall
+```
+
+### Manual
+
+<details>
+<summary>Click to expand manual setup instructions</summary>
+
+#### 1. Create the hook script
 
 Save the following as `~/.claude/scripts/tmux-state.sh` and make it executable (`chmod +x`):
 
@@ -60,8 +87,8 @@ Save the following as `~/.claude/scripts/tmux-state.sh` and make it executable (
 #!/bin/bash
 # tmux-state.sh - Claude Code hook: write pane state for claude-panes
 
-ICON_WORKING="●"
-ICON_WAITING="◐"
+ICON_WORKING="▶"
+ICON_WAITING="●"
 ICON_IDLE="○"
 ICON_ERROR="✕"
 
@@ -103,7 +130,7 @@ esac
 exit 0
 ```
 
-### 2. Register hooks in settings.json
+#### 2. Register hooks in settings.json
 
 Add the hooks section to `~/.claude/settings.json`:
 
@@ -129,11 +156,13 @@ Add the hooks section to `~/.claude/settings.json`:
 }
 ```
 
+</details>
+
 ### State file format
 
 | File | Format | Example |
 |------|--------|---------|
-| `/tmp/claude-tmux/pane-%<id>` | `<symbol> <project>` | `● my-project` (working), `◐ my-project` (waiting), `○ my-project` (idle), `✕ my-project` (error) |
+| `/tmp/claude-tmux/pane-%<id>` | `<symbol> <project>` | `▶ my-project` (working), `● my-project` (waiting), `○ my-project` (idle), `✕ my-project` (error) |
 | `/tmp/claude-tmux/prompt-%<id>` | Plain text | `Fix the login bug` |
 
 ## Usage
@@ -156,7 +185,7 @@ bind C-a display-popup -E -w 60% -h 70% "claude-panes"
 |-----|--------|
 | `Up` / `Down` | Navigate instances |
 | `Enter` | Jump to selected pane |
-| `Esc` | Clear filter (if active) or Quit |
+| `Esc` | Quit |
 | `Backspace` | Delete filter character |
 | Any character (except space) | Filter by project name |
 
@@ -182,9 +211,9 @@ All fields are optional. Values shown above are the defaults.
 
 | Symptom | Cause | Fix |
 |---------|-------|-----|
-| No instances shown | Hook not writing state files | Verify hooks are registered in `settings.json` and `tmux-state.sh` is executable |
+| No instances shown | Hook not writing state files | Run `claude-panes setup --check` to verify setup |
 | Icons show as boxes | Terminal doesn't support Unicode | Use a terminal with Unicode support (most modern terminals) |
-| Status always shows idle | PreToolUse heartbeat not configured | Add `PreToolUse` hook to `settings.json` |
+| Status always shows idle | PreToolUse heartbeat not configured | Run `claude-panes setup` to install all hooks |
 | "not inside a tmux session" | Running outside tmux | Run `claude-panes` inside a tmux session |
 | Last prompt column is empty | No `UserPromptSubmit` hook or session not yet prompted | Add `UserPromptSubmit` hook; prompt will appear after next submission |
 

@@ -84,8 +84,7 @@ pub fn read_state_files() -> Option<Vec<ClaudeInstance>> {
         let status = if (status == Status::Working || status == Status::Waiting)
             && (is_shell(&command) || is_stale_mtime(&entry))
         {
-            // Rewrite state file so that hook's update_window_if_active
-            // will sync the corrected status to tmux window name
+            // Rewrite state file so next read reflects corrected status
             if !is_symlink(&entry) {
                 let _ = fs::write(&entry, format!("○ {}", project));
             }
@@ -113,9 +112,9 @@ pub fn read_state_files() -> Option<Vec<ClaudeInstance>> {
 
 fn parse_pane_content(content: &str) -> (Status, String) {
     // Unicode symbols (new)
-    if let Some(project) = content.strip_prefix("● ") {
+    if let Some(project) = content.strip_prefix("▶ ") {
         (Status::Working, project.to_string())
-    } else if let Some(project) = content.strip_prefix("◐ ") {
+    } else if let Some(project) = content.strip_prefix("● ") {
         (Status::Waiting, project.to_string())
     } else if let Some(project) = content.strip_prefix("○ ") {
         (Status::Idle, project.to_string())
@@ -212,14 +211,14 @@ mod tests {
 
     #[test]
     fn parse_working() {
-        let (status, project) = parse_pane_content("● my-project");
+        let (status, project) = parse_pane_content("▶ my-project");
         assert_eq!(status, Status::Working);
         assert_eq!(project, "my-project");
     }
 
     #[test]
     fn parse_waiting() {
-        let (status, project) = parse_pane_content("◐ my-project");
+        let (status, project) = parse_pane_content("● my-project");
         assert_eq!(status, Status::Waiting);
         assert_eq!(project, "my-project");
     }
@@ -261,7 +260,7 @@ mod tests {
 
     #[test]
     fn parse_empty_project_name() {
-        let (status, project) = parse_pane_content("● ");
+        let (status, project) = parse_pane_content("▶ ");
         assert_eq!(status, Status::Working);
         assert_eq!(project, "");
     }

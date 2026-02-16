@@ -146,9 +146,14 @@ mod tests {
     }
 }
 
-/// Get the current tmux pane ID
+/// Get the current tmux pane ID.
+/// Prefers CLAUDE_PANES_CALLER_PANE (set by tmux display-popup wrapper)
+/// over TMUX_PANE (which points to the popup's ephemeral pane).
 pub fn current_pane_id() -> Option<String> {
-    std::env::var("TMUX_PANE").ok().filter(|s| !s.is_empty())
+    std::env::var("CLAUDE_PANES_CALLER_PANE")
+        .or_else(|_| std::env::var("TMUX_PANE"))
+        .ok()
+        .filter(|s| !s.is_empty())
 }
 
 /// Jump to a specific tmux pane (select window then pane)

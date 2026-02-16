@@ -134,11 +134,6 @@ impl App {
         self.reset_filter_selection();
     }
 
-    pub fn clear_filter(&mut self) {
-        self.filter.clear();
-        self.reset_filter_selection();
-    }
-
     fn reset_filter_selection(&mut self) {
         self.apply_filter();
         self.selected = 0;

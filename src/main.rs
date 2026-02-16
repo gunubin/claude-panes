@@ -1,5 +1,6 @@
 mod app;
 mod config;
+mod setup;
 mod state;
 mod tmux;
 mod ui;
@@ -19,6 +20,41 @@ use app::App;
 use config::Config;
 
 fn main() -> io::Result<()> {
+    let args: Vec<String> = std::env::args().collect();
+
+    // Handle subcommands that work outside tmux
+    match args.get(1).map(|s| s.as_str()) {
+        Some("setup") => {
+            let result = if args.iter().any(|a| a == "--check") {
+                setup::run_check().map(|ok| {
+                    if !ok {
+                        std::process::exit(1);
+                    }
+                })
+            } else if args.iter().any(|a| a == "--uninstall") {
+                setup::run_uninstall()
+            } else {
+                setup::run_setup()
+            };
+            if let Err(e) = result {
+                eprintln!("Error: {}", e);
+                std::process::exit(1);
+            }
+            return Ok(());
+        }
+        Some("--help" | "-h") => {
+            print_help();
+            return Ok(());
+        }
+        Some(cmd) => {
+            eprintln!("Unknown command: {}", cmd);
+            eprintln!();
+            print_help();
+            std::process::exit(1);
+        }
+        None => {}
+    }
+
     // Check tmux availability before entering raw mode
     if let Err(msg) = tmux::check_available() {
         eprintln!("Error: {}", msg);
@@ -61,6 +97,19 @@ fn main() -> io::Result<()> {
     Ok(())
 }
 
+fn print_help() {
+    println!("claude-panes - TUI dashboard for Claude Code tmux sessions");
+    println!();
+    println!("USAGE:");
+    println!("    claude-panes                     Launch TUI dashboard");
+    println!("    claude-panes setup               Install hooks and script");
+    println!("    claude-panes setup --check        Verify setup");
+    println!("    claude-panes setup --uninstall    Remove hooks and script");
+    println!();
+    println!("OPTIONS:");
+    println!("    -h, --help    Show this help message");
+}
+
 fn run_app(
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
     config: &Config,
@@ -90,13 +139,7 @@ fn run_app(
                         KeyCode::Up => app.move_up(),
                         KeyCode::Down => app.move_down(),
                         KeyCode::Enter => app.jump(),
-                        KeyCode::Esc => {
-                            if app.filter.is_empty() {
-                                app.quit();
-                            } else {
-                                app.clear_filter();
-                            }
-                        }
+                        KeyCode::Esc => app.quit(),
                         KeyCode::Backspace => app.delete_filter_char(),
                         KeyCode::Char(c) => app.add_filter_char(c),
                         _ => {}
