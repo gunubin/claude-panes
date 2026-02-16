@@ -369,4 +369,145 @@ mod tests {
         let result = filter_indices("dot", &inst, &kw);
         assert_eq!(result, vec![2]);
     }
+
+    // --- App method tests ---
+
+    fn make_app(projects: &[&str]) -> App {
+        let instances: Vec<ClaudeInstance> = projects
+            .iter()
+            .map(|p| ClaudeInstance {
+                pane_id: String::new(),
+                project: p.to_string(),
+                status: Status::Idle,
+                position: String::new(),
+                last_prompt: String::new(),
+            })
+            .collect();
+        let min_keywords = compute_min_keywords(&instances);
+        let filtered_indices = (0..instances.len()).collect();
+        App {
+            instances,
+            selected: 0,
+            filter: String::new(),
+            filtered_indices,
+            preview: String::new(),
+            should_quit: false,
+            jump_target: None,
+            strip_status: true,
+            min_keywords,
+        }
+    }
+
+    #[test]
+    fn move_up_at_top() {
+        let mut app = make_app(&["alpha", "beta", "gamma"]);
+        app.move_up();
+        assert_eq!(app.selected, 0);
+    }
+
+    #[test]
+    fn move_up_decrements() {
+        let mut app = make_app(&["alpha", "beta", "gamma"]);
+        app.selected = 2;
+        app.move_up();
+        assert_eq!(app.selected, 1);
+    }
+
+    #[test]
+    fn move_down_at_bottom() {
+        let mut app = make_app(&["alpha", "beta", "gamma"]);
+        app.selected = 2;
+        app.move_down();
+        assert_eq!(app.selected, 2);
+    }
+
+    #[test]
+    fn move_down_increments() {
+        let mut app = make_app(&["alpha", "beta", "gamma"]);
+        app.move_down();
+        assert_eq!(app.selected, 1);
+    }
+
+    #[test]
+    fn quit_sets_flag() {
+        let mut app = make_app(&["alpha"]);
+        app.quit();
+        assert!(app.should_quit);
+    }
+
+    #[test]
+    fn jump_sets_target() {
+        let mut app = make_app(&["alpha"]);
+        app.jump();
+        assert!(app.jump_target.is_some());
+        assert!(app.should_quit);
+    }
+
+    #[test]
+    fn jump_empty_list() {
+        let mut app = make_app(&[]);
+        app.jump();
+        assert_eq!(app.jump_target, None);
+        assert!(!app.should_quit);
+    }
+
+    #[test]
+    fn add_filter_char_appends() {
+        let mut app = make_app(&["alpha", "apex", "beta"]);
+        app.add_filter_char('a');
+        assert_eq!(app.filter, "a");
+    }
+
+    #[test]
+    fn add_filter_space_ignored() {
+        let mut app = make_app(&["alpha"]);
+        app.add_filter_char(' ');
+        assert_eq!(app.filter, "");
+    }
+
+    #[test]
+    fn add_filter_auto_jump() {
+        let mut app = make_app(&["alpha", "beta"]);
+        // keyword "b" exact-matches beta → 1 result → auto jump
+        app.add_filter_char('b');
+        assert!(app.should_quit);
+        assert!(app.jump_target.is_some());
+    }
+
+    #[test]
+    fn delete_filter_char_removes() {
+        let mut app = make_app(&["alpha", "beta"]);
+        app.filter = "ab".to_string();
+        app.delete_filter_char();
+        assert_eq!(app.filter, "a");
+    }
+
+    #[test]
+    fn delete_filter_empty_safe() {
+        let mut app = make_app(&["alpha"]);
+        app.delete_filter_char(); // should not panic
+        assert_eq!(app.filter, "");
+    }
+
+    #[test]
+    fn selected_instance_valid() {
+        let app = make_app(&["alpha", "beta"]);
+        let inst = app.selected_instance().unwrap();
+        assert_eq!(inst.project, "alpha");
+    }
+
+    #[test]
+    fn selected_instance_empty() {
+        let app = make_app(&[]);
+        assert!(app.selected_instance().is_none());
+    }
+
+    #[test]
+    fn filter_resets_selection() {
+        let mut app = make_app(&["alpha", "apex", "beta"]);
+        app.selected = 2;
+        // 'a' prefix-matches keywords "al" and "ap" → 2 results, no auto-jump
+        app.add_filter_char('a');
+        assert_eq!(app.selected, 0);
+    }
 }

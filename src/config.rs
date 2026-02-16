@@ -49,10 +49,14 @@ impl Config {
             }
         };
 
-        let raw: RawConfig = match toml::from_str(&content) {
+        Self::parse_toml(&content)
+    }
+
+    fn parse_toml(content: &str) -> Self {
+        let raw: RawConfig = match toml::from_str(content) {
             Ok(r) => r,
             Err(e) => {
-                eprintln!("Warning: invalid config {}: {}", path.display(), e);
+                eprintln!("Warning: invalid config: {}", e);
                 return Self::default();
             }
         };
@@ -165,5 +169,67 @@ mod tests {
     fn color_unknown_fallback() {
         assert_eq!(parse_color("orange"), Color::Cyan);
         assert_eq!(parse_color(""), Color::Cyan);
+    }
+
+    // --- Config parse_toml tests ---
+
+    #[test]
+    fn parse_full_config() {
+        let toml = r#"
+border_color = "green"
+strip_status = false
+
+[layout]
+list_percentage = 40
+preview_percentage = 60
+"#;
+        let cfg = Config::parse_toml(toml);
+        assert_eq!(cfg.border_color, Color::Green);
+        assert!(!cfg.strip_status);
+        assert_eq!(cfg.list_percentage, 40);
+        assert_eq!(cfg.preview_percentage, 60);
+    }
+
+    #[test]
+    fn parse_empty_string() {
+        let cfg = Config::parse_toml("");
+        assert_eq!(cfg.border_color, Color::Cyan);
+        assert!(cfg.strip_status);
+        assert_eq!(cfg.list_percentage, 30);
+        assert_eq!(cfg.preview_percentage, 70);
+    }
+
+    #[test]
+    fn parse_partial_config() {
+        let toml = r#"border_color = "red""#;
+        let cfg = Config::parse_toml(toml);
+        assert_eq!(cfg.border_color, Color::Red);
+        assert!(cfg.strip_status);
+        assert_eq!(cfg.list_percentage, 30);
+        assert_eq!(cfg.preview_percentage, 70);
+    }
+
+    #[test]
+    fn parse_invalid_layout_sum() {
+        let toml = r#"
+[layout]
+list_percentage = 60
+preview_percentage = 60
+"#;
+        let cfg = Config::parse_toml(toml);
+        assert_eq!(cfg.list_percentage, 30);
+        assert_eq!(cfg.preview_percentage, 70);
+    }
+
+    #[test]
+    fn parse_layout_zero() {
+        let toml = r#"
+[layout]
+list_percentage = 0
+preview_percentage = 70
+"#;
+        let cfg = Config::parse_toml(toml);
+        assert_eq!(cfg.list_percentage, 30);
+        assert_eq!(cfg.preview_percentage, 70);
     }
 }
