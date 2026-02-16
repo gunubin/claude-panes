@@ -55,9 +55,8 @@ fn is_our_hook_entry(entry: &Value) -> bool {
         .get("hooks")
         .and_then(|h| h.as_array())
         .is_some_and(|hs| {
-            hs.iter().any(|h| {
-                h.get("command").and_then(|c| c.as_str()) == Some(HOOK_COMMAND)
-            })
+            hs.iter()
+                .any(|h| h.get("command").and_then(|c| c.as_str()) == Some(HOOK_COMMAND))
         })
 }
 
@@ -155,8 +154,7 @@ fn read_settings(path: &Path) -> Result<Value, String> {
 
 fn write_settings(path: &Path, value: &Value) -> Result<(), String> {
     if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)
-            .map_err(|e| format!("failed to create directory: {}", e))?;
+        fs::create_dir_all(parent).map_err(|e| format!("failed to create directory: {}", e))?;
     }
     let content = serde_json::to_string_pretty(value)
         .map_err(|e| format!("failed to serialize settings: {}", e))?;
@@ -170,8 +168,7 @@ pub fn run_setup() -> Result<(), String> {
     // 1. Create script file
     let path = script_path()?;
     if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)
-            .map_err(|e| format!("failed to create directory: {}", e))?;
+        fs::create_dir_all(parent).map_err(|e| format!("failed to create directory: {}", e))?;
     }
 
     let script_changed = if path.exists() {

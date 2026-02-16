@@ -156,10 +156,7 @@ mod tests {
     #[test]
     fn current_pane_id_none_when_unset() {
         with_env_vars(
-            &[
-                ("CLAUDE_PANES_CALLER_PANE", None),
-                ("TMUX_PANE", None),
-            ],
+            &[("CLAUDE_PANES_CALLER_PANE", None), ("TMUX_PANE", None)],
             || {
                 assert_eq!(current_pane_id(), None);
             },

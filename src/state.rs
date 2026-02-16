@@ -89,8 +89,7 @@ pub fn read_state_files() -> Option<(Vec<ClaudeInstance>, HashSet<String>)> {
         // 2. State file mtime is too old AND no active spinner in pane title
         //    (spinner = Claude Code is still thinking, just not using tools)
         let status = if (status == Status::Working || status == Status::Waiting)
-            && (is_shell(&command)
-                || (is_stale_mtime(&entry) && !is_active_spinner(&title)))
+            && (is_shell(&command) || (is_stale_mtime(&entry) && !is_active_spinner(&title)))
         {
             // Rewrite state file so next read reflects corrected status
             if !is_symlink(&entry) {
@@ -169,7 +168,12 @@ fn parse_pane_list(stdout: &str) -> HashMap<String, (String, String, String, boo
             let has_bell = parts[3] == "1";
             map.insert(
                 parts[0].to_string(),
-                (parts[1].to_string(), parts[2].to_string(), title.to_string(), has_bell),
+                (
+                    parts[1].to_string(),
+                    parts[2].to_string(),
+                    title.to_string(),
+                    has_bell,
+                ),
             );
         }
     }
@@ -355,7 +359,12 @@ mod tests {
         let map = parse_pane_list(input);
         assert_eq!(
             map["%5"],
-            ("claude".into(), "2:1.0".into(), "⠋ Thinking about stuff".into(), false)
+            (
+                "claude".into(),
+                "2:1.0".into(),
+                "⠋ Thinking about stuff".into(),
+                false
+            )
         );
     }
 
@@ -392,7 +401,11 @@ mod tests {
     fn spinner_detection_braille() {
         for ch in ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'] {
             let title = format!("⠋ claude-panes {}", ch);
-            assert!(is_active_spinner(&title), "should detect spinner char {}", ch);
+            assert!(
+                is_active_spinner(&title),
+                "should detect spinner char {}",
+                ch
+            );
         }
     }
 

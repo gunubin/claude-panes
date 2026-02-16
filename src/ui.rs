@@ -63,7 +63,11 @@ pub fn draw(f: &mut Frame, app: &App, config: &Config) {
             let fg = |default: Color| -> Style {
                 let color = if is_notified { notify_color } else { default };
                 let s = Style::default().fg(color);
-                if is_selected { s.add_modifier(Modifier::BOLD) } else { s }
+                if is_selected {
+                    s.add_modifier(Modifier::BOLD)
+                } else {
+                    s
+                }
             };
 
             let mut spans = vec![
@@ -166,7 +170,10 @@ mod tests {
 
     #[test]
     fn truncate_multiline_joins_lines() {
-        assert_eq!(truncate_prompt("first\nsecond\nthird", 40), "first second third");
+        assert_eq!(
+            truncate_prompt("first\nsecond\nthird", 40),
+            "first second third"
+        );
     }
 
     #[test]
