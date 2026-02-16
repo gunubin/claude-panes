@@ -70,8 +70,9 @@ pub fn read_state_files() -> Option<Vec<ClaudeInstance>> {
         let (status, project) = parse_pane_content(content);
         // Skip panes that no longer exist in tmux
         let Some((command, position, title)) = pane_map.remove(&pane_id) else {
-            // Re-check symlink before destructive operation (defense-in-depth)
-            if !is_symlink(&entry) {
+            // paneがtmuxに見つからない: staleなら削除、freshなら保持
+            // (tmuxが一時的にペインを返さない場合のファイル消失を防止)
+            if !is_symlink(&entry) && is_stale_mtime(&entry) {
                 let _ = fs::remove_file(&entry);
             }
             continue;
@@ -434,5 +435,45 @@ mod tests {
     #[test]
     fn symlink_nonexistent() {
         assert!(is_symlink(Path::new("/tmp/claude-panes-nonexistent")));
+    }
+
+    // --- orphan file deletion logic ---
+
+    #[test]
+    fn orphan_fresh_file_not_deleted() {
+        let dir = std::env::temp_dir().join("claude-panes-test-orphan-fresh");
+        let _ = fs::create_dir_all(&dir);
+        let path = dir.join("pane-%99");
+        fs::write(&path, "▶ test-project").unwrap();
+        // Fresh file: is_stale_mtime returns false → should NOT be deleted
+        assert!(!is_symlink(&path));
+        assert!(!is_stale_mtime(&path));
+        // Simulate orphan branch: condition is !is_symlink && is_stale_mtime
+        if !is_symlink(&path) && is_stale_mtime(&path) {
+            let _ = fs::remove_file(&path);
+        }
+        assert!(path.exists(), "fresh orphan file should be preserved");
+        let _ = fs::remove_file(&path);
+        let _ = fs::remove_dir(&dir);
+    }
+
+    #[test]
+    fn orphan_stale_file_deleted() {
+        let dir = std::env::temp_dir().join("claude-panes-test-orphan-stale");
+        let _ = fs::create_dir_all(&dir);
+        let path = dir.join("pane-%98");
+        fs::write(&path, "▶ test-project").unwrap();
+        // Set mtime to 60 seconds ago → stale
+        let old_time =
+            filetime::FileTime::from_system_time(SystemTime::now() - Duration::from_secs(60));
+        filetime::set_file_mtime(&path, old_time).unwrap();
+        assert!(!is_symlink(&path));
+        assert!(is_stale_mtime(&path));
+        // Simulate orphan branch: condition is !is_symlink && is_stale_mtime
+        if !is_symlink(&path) && is_stale_mtime(&path) {
+            let _ = fs::remove_file(&path);
+        }
+        assert!(!path.exists(), "stale orphan file should be deleted");
+        let _ = fs::remove_dir(&dir);
     }
 }

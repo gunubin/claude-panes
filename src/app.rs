@@ -1,7 +1,7 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use crate::config::Config;
-use crate::state::{self, ClaudeInstance};
+use crate::state::{self, ClaudeInstance, Status};
 use crate::tmux;
 
 pub struct App {
@@ -14,6 +14,7 @@ pub struct App {
     pub jump_target: Option<String>,
     pub strip_status: bool,
     pub min_keywords: Vec<String>,
+    pub notified_pane_ids: HashSet<String>,
 }
 
 impl App {
@@ -47,6 +48,7 @@ impl App {
             jump_target: None,
             strip_status: config.strip_status,
             min_keywords,
+            notified_pane_ids: HashSet::new(),
         }
     }
 
@@ -64,8 +66,32 @@ impl App {
 
         let old_pane_id = self.selected_instance().map(|i| i.pane_id.clone());
 
+        // Save old statuses to detect Working→Waiting transitions
+        let old_statuses: HashMap<String, Status> = self
+            .instances
+            .iter()
+            .map(|i| (i.pane_id.clone(), i.status.clone()))
+            .collect();
+
         self.instances = new_instances;
         self.min_keywords = compute_min_keywords(&self.instances);
+
+        // Detect transitions to Waiting: notify when a known pane becomes Waiting
+        // from any non-Waiting state (covers Working→Waiting and also cases where
+        // the Working phase was too brief to catch between refresh cycles)
+        for inst in &self.instances {
+            if inst.status == Status::Waiting {
+                if let Some(old) = old_statuses.get(&inst.pane_id) {
+                    if *old != Status::Waiting {
+                        self.notified_pane_ids.insert(inst.pane_id.clone());
+                    }
+                }
+            }
+        }
+        // Remove notifications for panes that no longer exist
+        let current_ids: HashSet<String> =
+            self.instances.iter().map(|i| i.pane_id.clone()).collect();
+        self.notified_pane_ids.retain(|id| current_ids.contains(id));
         self.apply_filter();
 
         // Try to keep selection on the same pane
@@ -109,7 +135,9 @@ impl App {
 
     pub fn jump(&mut self) {
         if let Some(inst) = self.selected_instance() {
-            self.jump_target = Some(inst.pane_id.clone());
+            let pane_id = inst.pane_id.clone();
+            self.notified_pane_ids.remove(&pane_id);
+            self.jump_target = Some(pane_id);
             self.should_quit = true;
         }
     }
@@ -395,6 +423,7 @@ mod tests {
             jump_target: None,
             strip_status: true,
             min_keywords,
+            notified_pane_ids: HashSet::new(),
         }
     }
 
@@ -509,5 +538,146 @@ mod tests {
         // 'a' prefix-matches keywords "al" and "ap" → 2 results, no auto-jump
         app.add_filter_char('a');
         assert_eq!(app.selected, 0);
+    }
+
+    // --- notification tests ---
+
+    fn make_app_with_panes(panes: &[(&str, &str, Status)]) -> App {
+        let instances: Vec<ClaudeInstance> = panes
+            .iter()
+            .map(|(pane_id, project, status)| ClaudeInstance {
+                pane_id: pane_id.to_string(),
+                project: project.to_string(),
+                status: status.clone(),
+                position: String::new(),
+                last_prompt: String::new(),
+            })
+            .collect();
+        let min_keywords = compute_min_keywords(&instances);
+        let filtered_indices = (0..instances.len()).collect();
+        App {
+            instances,
+            selected: 0,
+            filter: String::new(),
+            filtered_indices,
+            preview: String::new(),
+            should_quit: false,
+            jump_target: None,
+            strip_status: true,
+            min_keywords,
+            notified_pane_ids: HashSet::new(),
+        }
+    }
+
+    /// Helper: simulate the notification detection logic from refresh()
+    fn detect_notifications(app: &mut App, new_instances: Vec<ClaudeInstance>) {
+        let old_statuses: HashMap<String, Status> = app
+            .instances
+            .iter()
+            .map(|i| (i.pane_id.clone(), i.status.clone()))
+            .collect();
+        app.instances = new_instances;
+        for inst in &app.instances {
+            if inst.status == Status::Waiting {
+                if let Some(old) = old_statuses.get(&inst.pane_id) {
+                    if *old != Status::Waiting {
+                        app.notified_pane_ids.insert(inst.pane_id.clone());
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn notify_on_working_to_waiting() {
+        let mut app = make_app_with_panes(&[
+            ("%0", "proj-a", Status::Working),
+            ("%1", "proj-b", Status::Idle),
+        ]);
+        detect_notifications(
+            &mut app,
+            vec![
+                ClaudeInstance {
+                    pane_id: "%0".into(),
+                    project: "proj-a".into(),
+                    status: Status::Waiting,
+                    position: String::new(),
+                    last_prompt: String::new(),
+                },
+                ClaudeInstance {
+                    pane_id: "%1".into(),
+                    project: "proj-b".into(),
+                    status: Status::Idle,
+                    position: String::new(),
+                    last_prompt: String::new(),
+                },
+            ],
+        );
+        assert!(app.notified_pane_ids.contains("%0"));
+        assert!(!app.notified_pane_ids.contains("%1"));
+    }
+
+    #[test]
+    fn notify_on_idle_to_waiting() {
+        // Working phase was too brief to catch between refresh cycles
+        let mut app = make_app_with_panes(&[("%0", "proj-a", Status::Idle)]);
+        detect_notifications(
+            &mut app,
+            vec![ClaudeInstance {
+                pane_id: "%0".into(),
+                project: "proj-a".into(),
+                status: Status::Waiting,
+                position: String::new(),
+                last_prompt: String::new(),
+            }],
+        );
+        assert!(app.notified_pane_ids.contains("%0"));
+    }
+
+    #[test]
+    fn no_notify_on_working_to_idle() {
+        let mut app = make_app_with_panes(&[("%0", "proj-a", Status::Working)]);
+        detect_notifications(
+            &mut app,
+            vec![ClaudeInstance {
+                pane_id: "%0".into(),
+                project: "proj-a".into(),
+                status: Status::Idle,
+                position: String::new(),
+                last_prompt: String::new(),
+            }],
+        );
+        assert!(app.notified_pane_ids.is_empty());
+    }
+
+    #[test]
+    fn no_notify_on_waiting_to_waiting() {
+        // Already Waiting, stays Waiting → no new notification
+        let mut app = make_app_with_panes(&[("%0", "proj-a", Status::Waiting)]);
+        detect_notifications(
+            &mut app,
+            vec![ClaudeInstance {
+                pane_id: "%0".into(),
+                project: "proj-a".into(),
+                status: Status::Waiting,
+                position: String::new(),
+                last_prompt: String::new(),
+            }],
+        );
+        assert!(app.notified_pane_ids.is_empty());
+    }
+
+    #[test]
+    fn jump_clears_notification() {
+        let mut app = make_app_with_panes(&[
+            ("%0", "proj-a", Status::Waiting),
+            ("%1", "proj-b", Status::Waiting),
+        ]);
+        app.notified_pane_ids.insert("%0".into());
+        app.notified_pane_ids.insert("%1".into());
+        // Jump to first item (selected=0 → %0)
+        app.jump();
+        assert!(!app.notified_pane_ids.contains("%0"));
+        assert!(app.notified_pane_ids.contains("%1"));
     }
 }

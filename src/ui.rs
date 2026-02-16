@@ -11,10 +11,10 @@ use crate::config::Config;
 use crate::state::Status;
 
 fn truncate_prompt(s: &str, max_width: usize) -> String {
-    let first_line = s.lines().next().unwrap_or("");
+    let joined: String = s.lines().collect::<Vec<_>>().join(" ");
     let mut width = 0;
     let mut result = String::new();
-    for c in first_line.chars() {
+    for c in joined.chars() {
         let w = c.width().unwrap_or(0);
         if width + w > max_width.saturating_sub(1) {
             result.push('…');
@@ -42,6 +42,9 @@ pub fn draw(f: &mut Frame, app: &App, config: &Config) {
         .iter()
         .filter_map(|&idx| app.instances.get(idx).map(|inst| (idx, inst)))
         .map(|(idx, inst)| {
+            let is_notified = app.notified_pane_ids.contains(&inst.pane_id);
+            let notify_color = config.notify_color;
+
             let (icon, status_color, status_label) = match inst.status {
                 Status::Working => ("▶", Color::LightGreen, "working"),
                 Status::Waiting => ("●", Color::Yellow, "waiting"),
@@ -53,27 +56,27 @@ pub fn draw(f: &mut Frame, app: &App, config: &Config) {
                 .get(idx)
                 .map(|k| format!(" [{}]", k))
                 .unwrap_or_default();
+
+            // When notified, override all fg colors to notify_color
+            let fg = |default: Color| -> Style {
+                Style::default().fg(if is_notified { notify_color } else { default })
+            };
+
             let mut spans = vec![
-                Span::styled(format!("  {} ", icon), Style::default().fg(status_color)),
-                Span::styled(inst.project.clone(), Style::default().fg(Color::White)),
-                Span::styled(keyword_tag.clone(), Style::default().fg(Color::Cyan)),
+                Span::styled(format!("  {} ", icon), fg(status_color)),
+                Span::styled(inst.project.clone(), fg(Color::White)),
+                Span::styled(keyword_tag.clone(), fg(Color::Cyan)),
                 Span::raw(format!(
                     "{:>width$}",
                     "",
                     width = 28usize.saturating_sub(inst.project.len() + keyword_tag.len())
                 )),
-                Span::styled(
-                    format!("{:<10}", status_label),
-                    Style::default().fg(status_color),
-                ),
-                Span::styled(
-                    format!("{:<10}", inst.position),
-                    Style::default().fg(Color::DarkGray),
-                ),
+                Span::styled(format!("{:<10}", status_label), fg(status_color)),
+                Span::styled(format!("{:<10}", inst.position), fg(Color::DarkGray)),
             ];
             if !inst.last_prompt.is_empty() {
                 let prompt = truncate_prompt(&inst.last_prompt, 40);
-                spans.push(Span::styled(prompt, Style::default().fg(Color::DarkGray)));
+                spans.push(Span::styled(prompt, fg(Color::DarkGray)));
             }
             ListItem::new(Line::from(spans))
         })
@@ -163,8 +166,8 @@ mod tests {
     }
 
     #[test]
-    fn truncate_multiline_uses_first() {
-        assert_eq!(truncate_prompt("first\nsecond\nthird", 40), "first");
+    fn truncate_multiline_joins_lines() {
+        assert_eq!(truncate_prompt("first\nsecond\nthird", 40), "first second third");
     }
 
     #[test]
