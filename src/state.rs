@@ -34,7 +34,7 @@ pub fn read_state_files() -> Option<(Vec<ClaudeInstance>, HashSet<String>)> {
 
     let mut instances = Vec::new();
     let mut bell_ids = HashSet::new();
-    let state_dir = state_dir();
+    let state_dir = state_dir()?;
     let pattern = format!("{}/pane-%*", state_dir);
     let paths = match glob(&pattern) {
         Ok(paths) => paths,
@@ -178,16 +178,24 @@ fn parse_pane_list(stdout: &str) -> HashMap<String, (String, String, String, boo
 
 /// Read the last user prompt from ~/.claude/pane-state/prompt-<pane_id>.
 fn read_last_prompt(pane_id: &str) -> String {
-    let path = format!("{}/prompt-{}", state_dir(), pane_id);
-    fs::read_to_string(&path)
+    let Some(dir) = state_dir() else {
+        return String::new();
+    };
+    let path_str = format!("{}/prompt-{}", dir, pane_id);
+    let path = Path::new(&path_str);
+    if is_symlink(path) {
+        return String::new();
+    }
+    fs::read_to_string(path)
         .map(|s| s.trim().to_string())
         .unwrap_or_default()
 }
 
 /// Get the state directory path (~/.claude/pane-state).
-fn state_dir() -> String {
-    let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
-    format!("{}/.claude/pane-state", home)
+/// Returns None if home directory cannot be determined.
+fn state_dir() -> Option<String> {
+    let home = dirs::home_dir()?;
+    Some(format!("{}/.claude/pane-state", home.display()))
 }
 
 /// Check if the pane title contains a braille spinner character,
