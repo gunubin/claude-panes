@@ -5,7 +5,7 @@
 ![Rust](https://img.shields.io/badge/rust-stable-orange)
 ![License](https://img.shields.io/badge/license-MIT-blue)
 
-<!-- TODO: Add screenshot or GIF here -->
+![screenshot](assets/screenshot.png)
 
 ## Why claude-panes?
 
@@ -27,12 +27,12 @@ Running multiple Claude Code sessions in tmux makes it hard to know which instan
 ## How It Works
 
 ```
-Claude Code hooks ──> /tmp/claude-tmux/pane-*   (status + project name)
-                  ──> /tmp/claude-tmux/prompt-*  (last user prompt)
-                          |
-claude-panes TUI <--------+--------> tmux list-panes  (cross-reference + pane title)
-                          |
-                     tmux capture-pane  (live preview)
+Claude Code hooks ──> ~/.claude/pane-state/pane-*   (status + project name)
+                  ──> ~/.claude/pane-state/prompt-*  (last user prompt)
+                              |
+claude-panes TUI <------------+--------> tmux list-panes  (cross-reference + pane title)
+                              |
+                         tmux capture-pane  (live preview)
 ```
 
 1. Claude Code hooks write state files on session events (start, prompt, tool use, stop, end)
@@ -104,7 +104,7 @@ event=$(echo "$input" | jq -r '.hook_event_name // "unknown"' 2>/dev/null)
 
 PANE_ID="$TMUX_PANE"
 [ -z "$PANE_ID" ] && exit 0
-STATE_DIR="/tmp/claude-tmux"
+STATE_DIR="$HOME/.claude/pane-state"
 PANE_FILE="$STATE_DIR/pane-${PANE_ID}"
 
 # Project name from this pane's directory (-t ensures correct pane, not active pane)
@@ -169,8 +169,8 @@ Add the hooks section to `~/.claude/settings.json`:
 
 | File | Format | Example |
 |------|--------|---------|
-| `/tmp/claude-tmux/pane-%<id>` | `<symbol> <project>` | `▶ my-project` (working), `● my-project` (waiting), `○ my-project` (idle), `✕ my-project` (error) |
-| `/tmp/claude-tmux/prompt-%<id>` | Plain text | `Fix the login bug` |
+| `~/.claude/pane-state/pane-%<id>` | `<symbol> <project>` | `▶ my-project` (working), `● my-project` (waiting), `○ my-project` (idle), `✕ my-project` (error) |
+| `~/.claude/pane-state/prompt-%<id>` | Plain text | `Fix the login bug` |
 
 </details>
 
