@@ -148,13 +148,7 @@ mod tests {
 
 /// Get the current tmux pane ID
 pub fn current_pane_id() -> Option<String> {
-    Command::new("tmux")
-        .args(["display-message", "-p", "#{pane_id}"])
-        .output()
-        .ok()
-        .filter(|o| o.status.success())
-        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
-        .filter(|s| !s.is_empty())
+    std::env::var("TMUX_PANE").ok().filter(|s| !s.is_empty())
 }
 
 /// Jump to a specific tmux pane (select window then pane)

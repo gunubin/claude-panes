@@ -14,15 +14,13 @@ pub struct App {
     pub jump_target: Option<String>,
     pub strip_status: bool,
     pub min_keywords: Vec<String>,
-    pub match_labels: Vec<String>,
 }
 
 impl App {
     pub fn new(config: &Config) -> Self {
         let instances = state::read_state_files().unwrap_or_default();
         let filtered_indices: Vec<usize> = (0..instances.len()).collect();
-        let match_labels = compute_match_labels(&instances);
-        let min_keywords = compute_min_keywords(&instances, &match_labels);
+        let min_keywords = compute_min_keywords(&instances);
 
         let current_pane = tmux::current_pane_id();
         let selected = current_pane
@@ -49,7 +47,6 @@ impl App {
             jump_target: None,
             strip_status: config.strip_status,
             min_keywords,
-            match_labels,
         }
     }
 
@@ -68,8 +65,7 @@ impl App {
         let old_pane_id = self.selected_instance().map(|i| i.pane_id.clone());
 
         self.instances = new_instances;
-        self.match_labels = compute_match_labels(&self.instances);
-        self.min_keywords = compute_min_keywords(&self.instances, &self.match_labels);
+        self.min_keywords = compute_min_keywords(&self.instances);
         self.apply_filter();
 
         // Try to keep selection on the same pane
@@ -84,11 +80,9 @@ impl App {
         }
 
         // Clamp selection to valid range
-        if self.filtered_indices.is_empty() {
-            self.selected = 0;
-        } else if self.selected >= self.filtered_indices.len() {
-            self.selected = self.filtered_indices.len() - 1;
-        }
+        self.selected = self
+            .selected
+            .min(self.filtered_indices.len().saturating_sub(1));
     }
 
     pub fn update_preview(&mut self) {
@@ -129,9 +123,7 @@ impl App {
             return;
         }
         self.filter.push(c);
-        self.apply_filter();
-        self.selected = 0;
-        self.update_preview();
+        self.reset_filter_selection();
         if self.filtered_indices.len() == 1 {
             self.jump();
         }
@@ -139,13 +131,15 @@ impl App {
 
     pub fn delete_filter_char(&mut self) {
         self.filter.pop();
-        self.apply_filter();
-        self.selected = 0;
-        self.update_preview();
+        self.reset_filter_selection();
     }
 
     pub fn clear_filter(&mut self) {
         self.filter.clear();
+        self.reset_filter_selection();
+    }
+
+    fn reset_filter_selection(&mut self) {
         self.apply_filter();
         self.selected = 0;
         self.update_preview();
@@ -204,28 +198,7 @@ fn fuzzy_match(pattern: &str, target: &str) -> bool {
     true
 }
 
-fn compute_match_labels(instances: &[ClaudeInstance]) -> Vec<String> {
-    let mut counts: HashMap<&str, usize> = HashMap::new();
-    for inst in instances {
-        *counts.entry(&inst.project).or_insert(0) += 1;
-    }
-
-    let mut seen: HashMap<&str, usize> = HashMap::new();
-    instances
-        .iter()
-        .map(|inst| {
-            if counts[inst.project.as_str()] == 1 {
-                inst.project.clone()
-            } else {
-                let idx = seen.entry(&inst.project).or_insert(0);
-                *idx += 1;
-                format!("{}{}", inst.project, idx)
-            }
-        })
-        .collect()
-}
-
-fn compute_min_keywords(instances: &[ClaudeInstance], _match_labels: &[String]) -> Vec<String> {
+fn compute_min_keywords(instances: &[ClaudeInstance]) -> Vec<String> {
     // Step 1: Collect unique project names
     let mut unique_projects: Vec<&str> = Vec::new();
     {
@@ -294,7 +267,7 @@ mod tests {
         }
     }
 
-    fn make_test_data() -> (Vec<ClaudeInstance>, Vec<String>, Vec<String>) {
+    fn make_test_data() -> (Vec<ClaudeInstance>, Vec<String>) {
         let instances = vec![
             inst("mono-and.blog"),
             inst("mono-and.blog"),
@@ -303,9 +276,8 @@ mod tests {
             inst("himawari"),
             inst("claude-panes"),
         ];
-        let labels = compute_match_labels(&instances);
-        let keywords = compute_min_keywords(&instances, &labels);
-        (instances, labels, keywords)
+        let keywords = compute_min_keywords(&instances);
+        (instances, keywords)
     }
 
     fn filter_indices(
@@ -326,22 +298,20 @@ mod tests {
             inst("himawari"),
             inst("claude-panes"),
         ];
-        let labels = compute_match_labels(&instances);
-        let kw = compute_min_keywords(&instances, &labels);
+        let kw = compute_min_keywords(&instances);
         assert_eq!(kw, vec!["m", "d", "h", "c"]);
     }
 
     #[test]
     fn test_min_keywords_duplicate_projects() {
-        let (_, _, kw) = make_test_data();
+        let (_, kw) = make_test_data();
         assert_eq!(kw, vec!["m1", "m2", "d", "h1", "h2", "c"]);
     }
 
     #[test]
     fn test_min_keywords_shared_prefix() {
         let instances = vec![inst("claude-panes"), inst("claude-test")];
-        let labels = compute_match_labels(&instances);
-        let kw = compute_min_keywords(&instances, &labels);
+        let kw = compute_min_keywords(&instances);
         assert_eq!(kw, vec!["claude-p", "claude-t"]);
     }
 
@@ -349,26 +319,26 @@ mod tests {
 
     #[test]
     fn test_filter_d_jumps_to_dotfiles() {
-        let (inst, _, kw) = make_test_data();
+        let (inst, kw) = make_test_data();
         // "d" exact matches keyword "d" → only dotfiles (index 2)
         assert_eq!(filter_indices("d", &inst, &kw), vec![2]);
     }
 
     #[test]
     fn test_filter_c_jumps_to_claude_panes() {
-        let (inst, _, kw) = make_test_data();
+        let (inst, kw) = make_test_data();
         assert_eq!(filter_indices("c", &inst, &kw), vec![5]);
     }
 
     #[test]
     fn test_filter_m2_jumps_to_second_mono() {
-        let (inst, _, kw) = make_test_data();
+        let (inst, kw) = make_test_data();
         assert_eq!(filter_indices("m2", &inst, &kw), vec![1]);
     }
 
     #[test]
     fn test_filter_h1_jumps_to_first_himawari() {
-        let (inst, _, kw) = make_test_data();
+        let (inst, kw) = make_test_data();
         assert_eq!(filter_indices("h1", &inst, &kw), vec![3]);
     }
 
@@ -376,7 +346,7 @@ mod tests {
 
     #[test]
     fn test_filter_m_shows_both_monos() {
-        let (inst, _, kw) = make_test_data();
+        let (inst, kw) = make_test_data();
         // "m" is prefix of "m1" and "m2", also fuzzy matches "mono-and.blog"
         let result = filter_indices("m", &inst, &kw);
         assert_eq!(result, vec![0, 1]);
@@ -384,7 +354,7 @@ mod tests {
 
     #[test]
     fn test_filter_h_shows_both_himawaris() {
-        let (inst, _, kw) = make_test_data();
+        let (inst, kw) = make_test_data();
         let result = filter_indices("h", &inst, &kw);
         assert_eq!(result, vec![3, 4]);
     }
@@ -393,14 +363,14 @@ mod tests {
 
     #[test]
     fn test_filter_mono_matches_by_project_name() {
-        let (inst, _, kw) = make_test_data();
+        let (inst, kw) = make_test_data();
         let result = filter_indices("mono", &inst, &kw);
         assert_eq!(result, vec![0, 1]);
     }
 
     #[test]
     fn test_filter_dot_matches_dotfiles() {
-        let (inst, _, kw) = make_test_data();
+        let (inst, kw) = make_test_data();
         let result = filter_indices("dot", &inst, &kw);
         assert_eq!(result, vec![2]);
     }

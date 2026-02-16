@@ -70,7 +70,10 @@ pub fn read_state_files() -> Option<Vec<ClaudeInstance>> {
         let (status, project) = parse_pane_content(content);
         // Skip panes that no longer exist in tmux
         let Some((command, position)) = pane_map.remove(&pane_id) else {
-            let _ = fs::remove_file(&entry); // Clean up orphaned state file
+            // Re-check symlink before destructive operation (defense-in-depth)
+            if !is_symlink(&entry) {
+                let _ = fs::remove_file(&entry);
+            }
             continue;
         };
 
@@ -83,7 +86,9 @@ pub fn read_state_files() -> Option<Vec<ClaudeInstance>> {
         {
             // Rewrite state file so that hook's update_window_if_active
             // will sync the corrected status to tmux window name
-            let _ = fs::write(&entry, format!("○ {}", project));
+            if !is_symlink(&entry) {
+                let _ = fs::write(&entry, format!("○ {}", project));
+            }
             Status::Idle
         } else {
             status
@@ -173,7 +178,7 @@ fn read_last_prompt(pane_id: &str) -> String {
 fn is_shell(command: &str) -> bool {
     matches!(
         command,
-        "fish" | "bash" | "zsh" | "sh" | "dash" | "-bash" | "-zsh" | "-fish"
+        "fish" | "bash" | "zsh" | "sh" | "dash" | "-bash" | "-zsh" | "-fish" | "-sh" | "-dash"
     )
 }
 
@@ -272,7 +277,7 @@ mod tests {
 
     #[test]
     fn shell_login_shells() {
-        for shell in ["-bash", "-zsh", "-fish"] {
+        for shell in ["-bash", "-zsh", "-fish", "-sh", "-dash"] {
             assert!(
                 is_shell(shell),
                 "{} should be recognized as login shell",

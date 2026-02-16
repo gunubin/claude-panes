@@ -119,3 +119,51 @@ fn parse_color(s: &str) -> Color {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn color_named() {
+        assert_eq!(parse_color("cyan"), Color::Cyan);
+        assert_eq!(parse_color("red"), Color::Red);
+        assert_eq!(parse_color("green"), Color::Green);
+        assert_eq!(parse_color("blue"), Color::Blue);
+        assert_eq!(parse_color("white"), Color::White);
+        assert_eq!(parse_color("yellow"), Color::Yellow);
+        assert_eq!(parse_color("magenta"), Color::Magenta);
+    }
+
+    #[test]
+    fn color_case_insensitive() {
+        assert_eq!(parse_color("Cyan"), Color::Cyan);
+        assert_eq!(parse_color("RED"), Color::Red);
+    }
+
+    #[test]
+    fn color_gray_alias() {
+        assert_eq!(parse_color("gray"), Color::Gray);
+        assert_eq!(parse_color("grey"), Color::Gray);
+    }
+
+    #[test]
+    fn color_hex_valid() {
+        assert_eq!(parse_color("#ff0000"), Color::Rgb(255, 0, 0));
+        assert_eq!(parse_color("#000000"), Color::Rgb(0, 0, 0));
+        assert_eq!(parse_color("#ffffff"), Color::Rgb(255, 255, 255));
+    }
+
+    #[test]
+    fn color_hex_invalid() {
+        assert_eq!(parse_color("#gggggg"), Color::Cyan);
+        assert_eq!(parse_color("#fff"), Color::Cyan); // too short
+        assert_eq!(parse_color("#ff00ff00"), Color::Cyan); // too long
+    }
+
+    #[test]
+    fn color_unknown_fallback() {
+        assert_eq!(parse_color("orange"), Color::Cyan);
+        assert_eq!(parse_color(""), Color::Cyan);
+    }
+}

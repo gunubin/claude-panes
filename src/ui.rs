@@ -42,17 +42,11 @@ pub fn draw(f: &mut Frame, app: &App, config: &Config) {
         .iter()
         .filter_map(|&idx| app.instances.get(idx).map(|inst| (idx, inst)))
         .map(|(idx, inst)| {
-            let (icon, status_color) = match inst.status {
-                Status::Working => ("●", Color::Green),
-                Status::Waiting => ("◐", Color::Yellow),
-                Status::Idle => ("○", Color::DarkGray),
-                Status::Error => ("✕", Color::Red),
-            };
-            let status_label = match inst.status {
-                Status::Working => "working",
-                Status::Waiting => "waiting",
-                Status::Idle => "idle",
-                Status::Error => "error",
+            let (icon, status_color, status_label) = match inst.status {
+                Status::Working => ("●", Color::Green, "working"),
+                Status::Waiting => ("◐", Color::Yellow, "waiting"),
+                Status::Idle => ("○", Color::DarkGray, "idle"),
+                Status::Error => ("✕", Color::Red, "error"),
             };
             let keyword_tag = app
                 .min_keywords
@@ -143,7 +137,55 @@ pub fn draw(f: &mut Frame, app: &App, config: &Config) {
         Span::styled("Enter", key_style),
         Span::raw(" jump  "),
         Span::styled("Esc", key_style),
-        Span::raw(" clear/quit"),
+        Span::raw(" quit"),
     ]));
     f.render_widget(help, chunks[2]);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn truncate_short_enough() {
+        assert_eq!(truncate_prompt("hello", 10), "hello");
+    }
+
+    #[test]
+    fn truncate_exact_fit() {
+        // saturating_sub(1) reserves 1 for ellipsis, so max_width=6 fits "hello" (5 chars)
+        assert_eq!(truncate_prompt("hello", 6), "hello");
+    }
+
+    #[test]
+    fn truncate_with_ellipsis() {
+        assert_eq!(truncate_prompt("helloworld", 6), "hello…");
+    }
+
+    #[test]
+    fn truncate_multiline_uses_first() {
+        assert_eq!(truncate_prompt("first\nsecond\nthird", 40), "first");
+    }
+
+    #[test]
+    fn truncate_empty() {
+        assert_eq!(truncate_prompt("", 10), "");
+    }
+
+    #[test]
+    fn truncate_max_width_zero() {
+        assert_eq!(truncate_prompt("a", 0), "…");
+    }
+
+    #[test]
+    fn truncate_max_width_one() {
+        assert_eq!(truncate_prompt("hello", 1), "…");
+    }
+
+    #[test]
+    fn truncate_cjk() {
+        // CJK chars have width 2. "日本語" = width 6
+        // max_width=5, sub(1)=4: 日(2)+本(2)=4, next 語 would exceed → ellipsis
+        assert_eq!(truncate_prompt("日本語test", 5), "日本…");
+    }
 }
