@@ -28,7 +28,7 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             border_color: Color::Cyan,
-            notify_color: Color::Rgb(255, 136, 0),
+            notify_color: Color::Rgb(250, 179, 135),
             strip_status: true,
             list_percentage: 30,
             preview_percentage: 70,
@@ -91,7 +91,7 @@ impl Config {
                 .notify_color
                 .as_deref()
                 .map(parse_color)
-                .unwrap_or(Color::Rgb(255, 136, 0)),
+                .unwrap_or(Color::Rgb(250, 179, 135)),
             strip_status: raw.strip_status.unwrap_or(true),
             list_percentage,
             preview_percentage,
@@ -204,7 +204,7 @@ preview_percentage = 60
     fn parse_empty_string() {
         let cfg = Config::parse_toml("");
         assert_eq!(cfg.border_color, Color::Cyan);
-        assert_eq!(cfg.notify_color, Color::Rgb(255, 136, 0));
+        assert_eq!(cfg.notify_color, Color::Rgb(250, 179, 135));
         assert!(cfg.strip_status);
         assert_eq!(cfg.list_percentage, 30);
         assert_eq!(cfg.preview_percentage, 70);

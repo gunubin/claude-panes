@@ -1,5 +1,5 @@
 use glob::glob;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::Path;
 use std::process::Command;
@@ -28,14 +28,16 @@ pub struct ClaudeInstance {
 
 /// Read all pane-* state files from /tmp/claude-tmux/
 /// Returns None when tmux is temporarily unavailable (caller should keep stale data).
-pub fn read_state_files() -> Option<Vec<ClaudeInstance>> {
+/// Returns (instances, bell_pane_ids) where bell_pane_ids contains pane IDs with active bell flags.
+pub fn read_state_files() -> Option<(Vec<ClaudeInstance>, HashSet<String>)> {
     let mut pane_map = build_pane_position_map()?;
 
     let mut instances = Vec::new();
+    let mut bell_ids = HashSet::new();
     let pattern = "/tmp/claude-tmux/pane-%*";
     let paths = match glob(pattern) {
         Ok(paths) => paths,
-        Err(_) => return Some(Vec::new()),
+        Err(_) => return Some((Vec::new(), HashSet::new())),
     };
 
     for entry in paths.flatten() {
@@ -69,14 +71,16 @@ pub fn read_state_files() -> Option<Vec<ClaudeInstance>> {
 
         let (status, project) = parse_pane_content(content);
         // Skip panes that no longer exist in tmux
-        let Some((command, position, title)) = pane_map.remove(&pane_id) else {
-            // paneがtmuxに見つからない: staleなら削除、freshなら保持
-            // (tmuxが一時的にペインを返さない場合のファイル消失を防止)
-            if !is_symlink(&entry) && is_stale_mtime(&entry) {
-                let _ = fs::remove_file(&entry);
-            }
+        let Some((command, position, title, has_bell)) = pane_map.remove(&pane_id) else {
+            // paneがtmuxに見つからない場合はスキップのみ。ファイル削除はしない。
+            // クリーンアップはSessionEnd hookに任せる。
             continue;
         };
+
+        // Collect pane IDs with active bell flags
+        if has_bell {
+            bell_ids.insert(pane_id.clone());
+        }
 
         // Correct stale status:
         // Working/Waiting -> Idle when:
@@ -110,7 +114,7 @@ pub fn read_state_files() -> Option<Vec<ClaudeInstance>> {
     // Sort by position only for stable ordering
     instances.sort_by(|a, b| a.position.cmp(&b.position));
 
-    Some(instances)
+    Some((instances, bell_ids))
 }
 
 fn parse_pane_content(content: &str) -> (Status, String) {
@@ -134,15 +138,15 @@ fn parse_pane_content(content: &str) -> (Status, String) {
     }
 }
 
-/// Run `tmux list-panes -a` to map pane IDs to (current_command, position, title).
+/// Run `tmux list-panes -a` to map pane IDs to (current_command, position, title, has_bell).
 /// Returns None if tmux command fails (server unavailable).
-fn build_pane_position_map() -> Option<HashMap<String, (String, String, String)>> {
+fn build_pane_position_map() -> Option<HashMap<String, (String, String, String, bool)>> {
     let output = Command::new("tmux")
         .args([
             "list-panes",
             "-a",
             "-F",
-            "#{pane_id} #{pane_current_command} #{session_name}:#{window_index}.#{pane_index} #{pane_title}",
+            "#{pane_id} #{pane_current_command} #{session_name}:#{window_index}.#{pane_index} #{window_bell_flag} #{pane_title}",
         ])
         .output()
         .ok()?;
@@ -154,16 +158,17 @@ fn build_pane_position_map() -> Option<HashMap<String, (String, String, String)>
     Some(parse_pane_list(&String::from_utf8_lossy(&output.stdout)))
 }
 
-/// Parse the output of `tmux list-panes -a -F "#{pane_id} #{pane_current_command} #{position} #{pane_title}"`.
-fn parse_pane_list(stdout: &str) -> HashMap<String, (String, String, String)> {
+/// Parse the output of `tmux list-panes -a -F "#{pane_id} #{pane_current_command} #{position} #{window_bell_flag} #{pane_title}"`.
+fn parse_pane_list(stdout: &str) -> HashMap<String, (String, String, String, bool)> {
     let mut map = HashMap::new();
     for line in stdout.lines() {
-        let parts: Vec<&str> = line.splitn(4, ' ').collect();
-        if parts.len() >= 3 {
-            let title = if parts.len() == 4 { parts[3] } else { "" };
+        let parts: Vec<&str> = line.splitn(5, ' ').collect();
+        if parts.len() >= 4 {
+            let title = if parts.len() == 5 { parts[4] } else { "" };
+            let has_bell = parts[3] == "1";
             map.insert(
                 parts[0].to_string(),
-                (parts[1].to_string(), parts[2].to_string(), title.to_string()),
+                (parts[1].to_string(), parts[2].to_string(), title.to_string(), has_bell),
             );
         }
     }
@@ -211,12 +216,16 @@ fn is_symlink(path: &Path) -> bool {
 /// Returns false on errors (better to show "working" than to incorrectly
 /// flip to "idle" due to a transient filesystem error).
 fn is_stale_mtime(path: &Path) -> bool {
+    file_age(path)
+        .map(|age| age > STALE_THRESHOLD)
+        .unwrap_or(false)
+}
+
+fn file_age(path: &Path) -> Option<Duration> {
     fs::metadata(path)
         .and_then(|m| m.modified())
         .ok()
         .and_then(|mtime| SystemTime::now().duration_since(mtime).ok())
-        .map(|age| age > STALE_THRESHOLD)
-        .unwrap_or(false)
 }
 
 #[cfg(test)]
@@ -316,37 +325,39 @@ mod tests {
 
     #[test]
     fn parse_pane_list_basic() {
-        let input = "%0 node 0:0.0 My Title\n%1 fish 1:0.0 Other\n";
+        let input = "%0 node 0:0.0 0 My Title\n%1 fish 1:0.0 1 Other\n";
         let map = parse_pane_list(input);
         assert_eq!(map.len(), 2);
         assert_eq!(
             map["%0"],
-            ("node".into(), "0:0.0".into(), "My Title".into())
+            ("node".into(), "0:0.0".into(), "My Title".into(), false)
         );
         assert_eq!(
             map["%1"],
-            ("fish".into(), "1:0.0".into(), "Other".into())
+            ("fish".into(), "1:0.0".into(), "Other".into(), true)
         );
     }
 
     #[test]
     fn parse_pane_list_title_with_spaces() {
-        let input = "%5 claude 2:1.0 ⠋ Thinking about stuff\n";
+        let input = "%5 claude 2:1.0 0 ⠋ Thinking about stuff\n";
         let map = parse_pane_list(input);
         assert_eq!(
             map["%5"],
-            ("claude".into(), "2:1.0".into(), "⠋ Thinking about stuff".into())
+            ("claude".into(), "2:1.0".into(), "⠋ Thinking about stuff".into(), false)
         );
     }
 
     #[test]
     fn parse_pane_list_empty_title() {
         // When pane_title is empty, tmux may output trailing space or not
-        let input = "%0 node 0:0.0 \n%1 fish 1:0.0\n";
+        let input = "%0 node 0:0.0 0 \n%1 fish 1:0.0 1\n";
         let map = parse_pane_list(input);
         assert_eq!(map.len(), 2);
         assert_eq!(map["%0"].2, "");
+        assert_eq!(map["%0"].3, false);
         assert_eq!(map["%1"].2, "");
+        assert_eq!(map["%1"].3, true);
     }
 
     #[test]
@@ -357,10 +368,11 @@ mod tests {
 
     #[test]
     fn parse_pane_list_malformed_lines() {
-        let input = "bad line\n%0 node\n%1 fish 0:0.0 ok\n";
+        let input = "bad line\n%0 node\n%1 fish 0:0.0 0 ok\n";
         let map = parse_pane_list(input);
         assert_eq!(map.len(), 1);
         assert_eq!(map["%1"].0, "fish");
+        assert_eq!(map["%1"].3, false);
     }
 
     // --- is_active_spinner ---
@@ -437,43 +449,7 @@ mod tests {
         assert!(is_symlink(Path::new("/tmp/claude-panes-nonexistent")));
     }
 
-    // --- orphan file deletion logic ---
-
-    #[test]
-    fn orphan_fresh_file_not_deleted() {
-        let dir = std::env::temp_dir().join("claude-panes-test-orphan-fresh");
-        let _ = fs::create_dir_all(&dir);
-        let path = dir.join("pane-%99");
-        fs::write(&path, "▶ test-project").unwrap();
-        // Fresh file: is_stale_mtime returns false → should NOT be deleted
-        assert!(!is_symlink(&path));
-        assert!(!is_stale_mtime(&path));
-        // Simulate orphan branch: condition is !is_symlink && is_stale_mtime
-        if !is_symlink(&path) && is_stale_mtime(&path) {
-            let _ = fs::remove_file(&path);
-        }
-        assert!(path.exists(), "fresh orphan file should be preserved");
-        let _ = fs::remove_file(&path);
-        let _ = fs::remove_dir(&dir);
-    }
-
-    #[test]
-    fn orphan_stale_file_deleted() {
-        let dir = std::env::temp_dir().join("claude-panes-test-orphan-stale");
-        let _ = fs::create_dir_all(&dir);
-        let path = dir.join("pane-%98");
-        fs::write(&path, "▶ test-project").unwrap();
-        // Set mtime to 60 seconds ago → stale
-        let old_time =
-            filetime::FileTime::from_system_time(SystemTime::now() - Duration::from_secs(60));
-        filetime::set_file_mtime(&path, old_time).unwrap();
-        assert!(!is_symlink(&path));
-        assert!(is_stale_mtime(&path));
-        // Simulate orphan branch: condition is !is_symlink && is_stale_mtime
-        if !is_symlink(&path) && is_stale_mtime(&path) {
-            let _ = fs::remove_file(&path);
-        }
-        assert!(!path.exists(), "stale orphan file should be deleted");
-        let _ = fs::remove_dir(&dir);
-    }
+    // --- orphan file handling ---
+    // read_state_files() no longer deletes orphan files.
+    // Cleanup is handled by the SessionEnd hook in tmux-state.sh.
 }

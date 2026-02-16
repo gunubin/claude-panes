@@ -1,7 +1,7 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::config::Config;
-use crate::state::{self, ClaudeInstance, Status};
+use crate::state::{self, ClaudeInstance};
 use crate::tmux;
 
 pub struct App {
@@ -19,7 +19,7 @@ pub struct App {
 
 impl App {
     pub fn new(config: &Config) -> Self {
-        let instances = state::read_state_files().unwrap_or_default();
+        let (instances, bell_ids) = state::read_state_files().unwrap_or_default();
         let filtered_indices: Vec<usize> = (0..instances.len()).collect();
         let min_keywords = compute_min_keywords(&instances);
 
@@ -48,7 +48,7 @@ impl App {
             jump_target: None,
             strip_status: config.strip_status,
             min_keywords,
-            notified_pane_ids: HashSet::new(),
+            notified_pane_ids: bell_ids,
         }
     }
 
@@ -59,39 +59,16 @@ impl App {
     }
 
     pub fn refresh(&mut self) {
-        let new_instances = match state::read_state_files() {
-            Some(instances) => instances,
+        let (new_instances, bell_ids) = match state::read_state_files() {
+            Some(result) => result,
             None => return, // tmux unavailable, keep stale data
         };
 
         let old_pane_id = self.selected_instance().map(|i| i.pane_id.clone());
 
-        // Save old statuses to detect Working→Waiting transitions
-        let old_statuses: HashMap<String, Status> = self
-            .instances
-            .iter()
-            .map(|i| (i.pane_id.clone(), i.status.clone()))
-            .collect();
-
         self.instances = new_instances;
         self.min_keywords = compute_min_keywords(&self.instances);
-
-        // Detect transitions to Waiting: notify when a known pane becomes Waiting
-        // from any non-Waiting state (covers Working→Waiting and also cases where
-        // the Working phase was too brief to catch between refresh cycles)
-        for inst in &self.instances {
-            if inst.status == Status::Waiting {
-                if let Some(old) = old_statuses.get(&inst.pane_id) {
-                    if *old != Status::Waiting {
-                        self.notified_pane_ids.insert(inst.pane_id.clone());
-                    }
-                }
-            }
-        }
-        // Remove notifications for panes that no longer exist
-        let current_ids: HashSet<String> =
-            self.instances.iter().map(|i| i.pane_id.clone()).collect();
-        self.notified_pane_ids.retain(|id| current_ids.contains(id));
+        self.notified_pane_ids = bell_ids;
         self.apply_filter();
 
         // Try to keep selection on the same pane
@@ -567,104 +544,6 @@ mod tests {
             min_keywords,
             notified_pane_ids: HashSet::new(),
         }
-    }
-
-    /// Helper: simulate the notification detection logic from refresh()
-    fn detect_notifications(app: &mut App, new_instances: Vec<ClaudeInstance>) {
-        let old_statuses: HashMap<String, Status> = app
-            .instances
-            .iter()
-            .map(|i| (i.pane_id.clone(), i.status.clone()))
-            .collect();
-        app.instances = new_instances;
-        for inst in &app.instances {
-            if inst.status == Status::Waiting {
-                if let Some(old) = old_statuses.get(&inst.pane_id) {
-                    if *old != Status::Waiting {
-                        app.notified_pane_ids.insert(inst.pane_id.clone());
-                    }
-                }
-            }
-        }
-    }
-
-    #[test]
-    fn notify_on_working_to_waiting() {
-        let mut app = make_app_with_panes(&[
-            ("%0", "proj-a", Status::Working),
-            ("%1", "proj-b", Status::Idle),
-        ]);
-        detect_notifications(
-            &mut app,
-            vec![
-                ClaudeInstance {
-                    pane_id: "%0".into(),
-                    project: "proj-a".into(),
-                    status: Status::Waiting,
-                    position: String::new(),
-                    last_prompt: String::new(),
-                },
-                ClaudeInstance {
-                    pane_id: "%1".into(),
-                    project: "proj-b".into(),
-                    status: Status::Idle,
-                    position: String::new(),
-                    last_prompt: String::new(),
-                },
-            ],
-        );
-        assert!(app.notified_pane_ids.contains("%0"));
-        assert!(!app.notified_pane_ids.contains("%1"));
-    }
-
-    #[test]
-    fn notify_on_idle_to_waiting() {
-        // Working phase was too brief to catch between refresh cycles
-        let mut app = make_app_with_panes(&[("%0", "proj-a", Status::Idle)]);
-        detect_notifications(
-            &mut app,
-            vec![ClaudeInstance {
-                pane_id: "%0".into(),
-                project: "proj-a".into(),
-                status: Status::Waiting,
-                position: String::new(),
-                last_prompt: String::new(),
-            }],
-        );
-        assert!(app.notified_pane_ids.contains("%0"));
-    }
-
-    #[test]
-    fn no_notify_on_working_to_idle() {
-        let mut app = make_app_with_panes(&[("%0", "proj-a", Status::Working)]);
-        detect_notifications(
-            &mut app,
-            vec![ClaudeInstance {
-                pane_id: "%0".into(),
-                project: "proj-a".into(),
-                status: Status::Idle,
-                position: String::new(),
-                last_prompt: String::new(),
-            }],
-        );
-        assert!(app.notified_pane_ids.is_empty());
-    }
-
-    #[test]
-    fn no_notify_on_waiting_to_waiting() {
-        // Already Waiting, stays Waiting → no new notification
-        let mut app = make_app_with_panes(&[("%0", "proj-a", Status::Waiting)]);
-        detect_notifications(
-            &mut app,
-            vec![ClaudeInstance {
-                pane_id: "%0".into(),
-                project: "proj-a".into(),
-                status: Status::Waiting,
-                position: String::new(),
-                last_prompt: String::new(),
-            }],
-        );
-        assert!(app.notified_pane_ids.is_empty());
     }
 
     #[test]

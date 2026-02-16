@@ -40,9 +40,11 @@ pub fn draw(f: &mut Frame, app: &App, config: &Config) {
     let items: Vec<ListItem> = app
         .filtered_indices
         .iter()
-        .filter_map(|&idx| app.instances.get(idx).map(|inst| (idx, inst)))
-        .map(|(idx, inst)| {
+        .enumerate()
+        .filter_map(|(pos, &idx)| app.instances.get(idx).map(|inst| (pos, idx, inst)))
+        .map(|(pos, idx, inst)| {
             let is_notified = app.notified_pane_ids.contains(&inst.pane_id);
+            let is_selected = pos == app.selected;
             let notify_color = config.notify_color;
 
             let (icon, status_color, status_label) = match inst.status {
@@ -57,9 +59,11 @@ pub fn draw(f: &mut Frame, app: &App, config: &Config) {
                 .map(|k| format!(" [{}]", k))
                 .unwrap_or_default();
 
-            // When notified, override all fg colors to notify_color
+            // Notification color takes priority; selected rows get BOLD
             let fg = |default: Color| -> Style {
-                Style::default().fg(if is_notified { notify_color } else { default })
+                let color = if is_notified { notify_color } else { default };
+                let s = Style::default().fg(color);
+                if is_selected { s.add_modifier(Modifier::BOLD) } else { s }
             };
 
             let mut spans = vec![
@@ -96,11 +100,6 @@ pub fn draw(f: &mut Frame, app: &App, config: &Config) {
                 .borders(Borders::ALL)
                 .border_style(border_style)
                 .title(title),
-        )
-        .highlight_style(
-            Style::default()
-                .fg(config.border_color)
-                .add_modifier(Modifier::BOLD),
         )
         .highlight_symbol("> ");
 
