@@ -83,19 +83,40 @@ pub fn read_state_files() -> Option<(Vec<ClaudeInstance>, HashSet<String>)> {
             bell_ids.insert(pane_id.clone());
         }
 
-        // Correct stale status:
-        // Working/Waiting -> Idle when:
-        // 1. Shell is foreground -> Claude Code has exited
-        // 2. State file mtime is too old AND no active spinner in pane title
-        //    (spinner = Claude Code is still thinking, just not using tools)
+        // Status correction (three cases):
+        //
+        // 1. Working/Waiting → Idle: shell is foreground (Claude exited)
+        //    Permanent: rewrite state file.
+        //
+        // 2. Working/Waiting → Idle: mtime stale + no activity in title/content
+        //    Temporary: do NOT rewrite file. Re-check next cycle so that
+        //    a resumed tool call (hook writes ▶) is picked up immediately.
+        //
+        // 3. Idle → Working: command is not a shell AND content shows activity
+        //    Recovers from incorrect idle correction (case 2 was wrong,
+        //    or old binary had already rewritten the file).
         let status = if (status == Status::Working || status == Status::Waiting)
-            && (is_shell(&command) || (is_stale_mtime(&entry) && !is_active_spinner(&title)))
+            && is_shell(&command)
         {
-            // Rewrite state file so next read reflects corrected status
+            // Case 1: Claude exited → permanent idle
             if !is_symlink(&entry) {
                 let _ = fs::write(&entry, format!("○ {}", project));
             }
             Status::Idle
+        } else if (status == Status::Working || status == Status::Waiting)
+            && is_stale_mtime(&entry)
+            && !is_active_spinner(&title)
+            && !tmux::has_spinner_in_content(&pane_id)
+        {
+            // Case 2: likely idle, but don't rewrite file
+            Status::Idle
+        } else if status == Status::Idle
+            && !is_shell(&command)
+            && tmux::has_spinner_in_content(&pane_id)
+        {
+            // Case 3: content shows active processing → Working (in memory only)
+            // Don't rewrite file: when content becomes inactive, immediately revert to Idle
+            Status::Working
         } else {
             status
         };

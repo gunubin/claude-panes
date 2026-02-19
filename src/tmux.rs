@@ -93,8 +93,8 @@ pub fn is_active_content(text: &str) -> bool {
     let check_end = separator.unwrap_or(len);
     let check_start = check_end.saturating_sub(3);
 
-    for i in check_start..check_end {
-        let trimmed = lines[i].trim();
+    for line in lines.iter().take(check_end).skip(check_start) {
+        let trimmed = line.trim();
         if trimmed.is_empty() {
             continue;
         }
