@@ -56,6 +56,67 @@ pub fn capture_pane(pane_id: &str, lines: i32, strip_status: bool) -> String {
     }
 }
 
+/// Check if the pane content indicates active Claude Code processing.
+/// Captures the entire visible area so we can locate the separator bar
+/// and inspect only the lines immediately above it.
+pub fn has_spinner_in_content(pane_id: &str) -> bool {
+    if !is_valid_pane_id(pane_id) {
+        return false;
+    }
+
+    let output = Command::new("tmux")
+        .args(["capture-pane", "-t", pane_id, "-p"])
+        .output();
+
+    match output {
+        Ok(o) if o.status.success() => {
+            let text = String::from_utf8_lossy(&o.stdout);
+            is_active_content(&text)
+        }
+        _ => false,
+    }
+}
+
+/// Check if captured pane content shows signs of active Claude Code processing.
+/// Finds the separator bar (────) in the bottom ~15 lines, then inspects
+/// only the 3 lines immediately above it. This prevents false positives from
+/// output content like `… +2 lines (ctrl+o to expand)`.
+pub fn is_active_content(text: &str) -> bool {
+    let lines: Vec<&str> = text.lines().collect();
+    let len = lines.len();
+    let search_start = len.saturating_sub(15);
+
+    // Find separator bar position in the bottom ~15 lines
+    let separator = (search_start..len).find(|&i| is_horizontal_bar(lines[i]));
+
+    // Inspect up to 3 lines above the separator (or bottom 3 lines if no separator)
+    let check_end = separator.unwrap_or(len);
+    let check_start = check_end.saturating_sub(3);
+
+    for i in check_start..check_end {
+        let trimmed = lines[i].trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        if contains_braille_spinner(trimmed) || trimmed.contains("· ↓") {
+            return true;
+        }
+        let mut chars = trimmed.chars();
+        if let (Some(first), Some(' ')) = (chars.next(), chars.next()) {
+            if !first.is_ascii() && trimmed.contains('…') {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// Check if text contains braille spinner characters used by Claude Code.
+pub fn contains_braille_spinner(text: &str) -> bool {
+    text.chars()
+        .any(|c| matches!(c, '⠋' | '⠙' | '⠹' | '⠸' | '⠼' | '⠴' | '⠦' | '⠧' | '⠇' | '⠏'))
+}
+
 /// Remove Claude Code's status/prompt area from captured output.
 /// Searches the bottom ~15 lines for horizontal bar lines (────)
 /// and cuts at the topmost one found (above the prompt + status area).
@@ -224,6 +285,167 @@ mod tests {
         assert!(!is_horizontal_bar("───────────")); // too short
         assert!(!is_horizontal_bar("--------------------")); // ASCII dashes
         assert!(!is_horizontal_bar(""));
+    }
+
+    // --- contains_braille_spinner ---
+
+    #[test]
+    fn braille_spinner_all_chars() {
+        for ch in ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'] {
+            let text = format!("some output\n⠋ Working {}", ch);
+            assert!(
+                contains_braille_spinner(&text),
+                "should detect spinner char {}",
+                ch
+            );
+        }
+    }
+
+    #[test]
+    fn braille_spinner_in_status_line() {
+        let text = "line1\nline2\nline3\n────────────────────────────\n⠹ Reading src/main.rs";
+        assert!(contains_braille_spinner(text));
+    }
+
+    #[test]
+    fn braille_spinner_absent() {
+        let text = "line1\nline2\n> some prompt";
+        assert!(!contains_braille_spinner(text));
+    }
+
+    #[test]
+    fn braille_spinner_empty() {
+        assert!(!contains_braille_spinner(""));
+    }
+
+    #[test]
+    fn has_spinner_in_content_invalid_pane() {
+        assert!(!has_spinner_in_content("invalid"));
+        assert!(!has_spinner_in_content(""));
+        assert!(!has_spinner_in_content("%abc"));
+    }
+
+    // --- is_active_content ---
+
+    #[test]
+    fn active_content_braille_spinner() {
+        // Spinner above separator → detected
+        let text = "some output\n⠹ Reading src/main.rs\n────────────────────────────\n> ";
+        assert!(is_active_content(text));
+    }
+
+    #[test]
+    fn active_content_status_line_with_tokens() {
+        // Real Claude Code layout: status line above separator
+        let text = "     └ Done\n\
+                    ✱ Dilly-dallying… (3m 5s · ↓ 4.6k tokens · thought for 4s)\n\
+                    ────────────────────────────\n\
+                    > ";
+        assert!(is_active_content(text));
+    }
+
+    #[test]
+    fn active_content_status_line_with_ellipsis() {
+        // Status line with spinner icon + ellipsis above separator
+        let text = "some output\n✱ Thinking…\n────────────────────────────\n> ";
+        assert!(is_active_content(text));
+    }
+
+    #[test]
+    fn active_content_status_line_with_time() {
+        let text = "some output\n✱ Thinking… (30s)\n────────────────────────────\n> ";
+        assert!(is_active_content(text));
+    }
+
+    #[test]
+    fn active_content_subagent_line() {
+        // Sub-agent status above separator
+        let text = "some output\n\
+                    ✱ Working…\n\
+                         └ Searching for 5 patterns, reading 4 files…\n\
+                    ────────────────────────────\n\
+                    > ";
+        assert!(is_active_content(text));
+    }
+
+    #[test]
+    fn active_content_idle_prompt() {
+        // Idle state: no spinner, no status line
+        let text = "some output\n────────────────────────────\n> ";
+        assert!(!is_active_content(text));
+    }
+
+    #[test]
+    fn active_content_plain_text() {
+        let text = "line1\nline2\nline3";
+        assert!(!is_active_content(text));
+    }
+
+    #[test]
+    fn active_content_empty() {
+        assert!(!is_active_content(""));
+    }
+
+    #[test]
+    fn active_content_ascii_only_no_match() {
+        // ASCII text with ellipsis-like content should NOT match
+        let text = "Loading...\nPlease wait\n────────────────────────────\n> ";
+        assert!(!is_active_content(text));
+    }
+
+    #[test]
+    fn active_content_token_counter_deep() {
+        // Status line buried under tip + separator + prompt (real Claude Code layout)
+        let text = "content\n\
+                    ✱ Vibing… (1m 5s · ↓ 1.0k tokens)\n\
+                    └ Tip: Use /config to change mode\n\
+                    ────────────────────────────\n\
+                    > \n\
+                    \n\
+                    ";
+        assert!(is_active_content(text));
+    }
+
+    #[test]
+    fn active_content_bar_not_matched() {
+        // Separator bar alone should not match
+        let text = "some output\n────────────────────────────\n> ";
+        assert!(!is_active_content(text));
+    }
+
+    #[test]
+    fn active_content_cjk_not_matched() {
+        // CJK text should not false-positive (no space after first char)
+        let text = "修正方針：\n全てのです・ます調を変換…\n────────────────────────────\n> ";
+        assert!(!is_active_content(text));
+    }
+
+    #[test]
+    fn active_content_collapsed_lines_no_match() {
+        // `… +2 lines (ctrl+o to expand)` in output area (above separator) should NOT match
+        // because it's more than 3 lines above the separator
+        let text = "some code output\n\
+                    … +2 lines (ctrl+o to expand)\n\
+                    more output\n\
+                    even more output\n\
+                    final output line\n\
+                    ────────────────────────────\n\
+                    > ";
+        assert!(!is_active_content(text));
+    }
+
+    #[test]
+    fn active_content_no_separator_fallback() {
+        // No separator: check bottom 3 lines. Status line at bottom → detected
+        let text = "line1\nline2\n✱ Vibing…";
+        assert!(is_active_content(text));
+    }
+
+    #[test]
+    fn active_content_no_separator_plain() {
+        // No separator: bottom 3 lines are plain text → no match
+        let text = "line1\nline2\nline3";
+        assert!(!is_active_content(text));
     }
 }
 
