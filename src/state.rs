@@ -95,31 +95,30 @@ pub fn read_state_files() -> Option<(Vec<ClaudeInstance>, HashSet<String>)> {
         // 3. Idle → Working: command is not a shell AND content shows activity
         //    Recovers from incorrect idle correction (case 2 was wrong,
         //    or old binary had already rewritten the file).
-        let status = if (status == Status::Working || status == Status::Waiting)
-            && is_shell(&command)
-        {
-            // Case 1: Claude exited → permanent idle
-            if !is_symlink(&entry) {
-                let _ = fs::write(&entry, format!("○ {}", project));
-            }
-            Status::Idle
-        } else if (status == Status::Working || status == Status::Waiting)
-            && is_stale_mtime(&entry)
-            && !is_active_spinner(&title)
-            && !tmux::has_spinner_in_content(&pane_id)
-        {
-            // Case 2: likely idle, but don't rewrite file
-            Status::Idle
-        } else if status == Status::Idle
-            && !is_shell(&command)
-            && tmux::has_spinner_in_content(&pane_id)
-        {
-            // Case 3: content shows active processing → Working (in memory only)
-            // Don't rewrite file: when content becomes inactive, immediately revert to Idle
-            Status::Working
-        } else {
-            status
-        };
+        let status =
+            if (status == Status::Working || status == Status::Waiting) && is_shell(&command) {
+                // Case 1: Claude exited → permanent idle
+                if !is_symlink(&entry) {
+                    let _ = fs::write(&entry, format!("○ {}", project));
+                }
+                Status::Idle
+            } else if (status == Status::Working || status == Status::Waiting)
+                && is_stale_mtime(&entry)
+                && !is_active_spinner(&title)
+                && !tmux::has_spinner_in_content(&pane_id)
+            {
+                // Case 2: likely idle, but don't rewrite file
+                Status::Idle
+            } else if status == Status::Idle
+                && !is_shell(&command)
+                && tmux::has_spinner_in_content(&pane_id)
+            {
+                // Case 3: content shows active processing → Working (in memory only)
+                // Don't rewrite file: when content becomes inactive, immediately revert to Idle
+                Status::Working
+            } else {
+                status
+            };
 
         let last_prompt = read_last_prompt(&pane_id);
 
