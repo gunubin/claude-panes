@@ -171,6 +171,18 @@ pub fn run_setup() -> Result<(), String> {
         fs::create_dir_all(parent).map_err(|e| format!("failed to create directory: {}", e))?;
     }
 
+    // Reject symlink to prevent TOCTOU file overwrite attacks
+    if path.exists() {
+        let meta = fs::symlink_metadata(&path)
+            .map_err(|e| format!("failed to stat script path: {}", e))?;
+        if meta.file_type().is_symlink() {
+            return Err(format!(
+                "refusing to write: {} is a symlink",
+                display_path(&path)
+            ));
+        }
+    }
+
     let script_changed = if path.exists() {
         fs::read_to_string(&path).map_or(true, |content| content != HOOK_SCRIPT)
     } else {

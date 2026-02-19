@@ -13,6 +13,8 @@ event=$(echo "$input" | jq -r '.hook_event_name // "unknown"' 2>/dev/null)
 
 PANE_ID="$TMUX_PANE"
 [ -z "$PANE_ID" ] && exit 0
+# Validate pane ID format (%<digits>) to prevent path traversal / injection
+[[ "$PANE_ID" =~ ^%[0-9]+$ ]] || exit 0
 STATE_DIR="$HOME/.claude/pane-state"
 PANE_FILE="$STATE_DIR/pane-${PANE_ID}"
 

@@ -73,7 +73,18 @@ pub fn has_spinner_in_content(pane_id: &str) -> bool {
             let text = String::from_utf8_lossy(&o.stdout);
             is_active_content(&text)
         }
-        _ => false,
+        Ok(o) => {
+            eprintln!(
+                "claude-panes: capture-pane failed for {}: {}",
+                pane_id,
+                String::from_utf8_lossy(&o.stderr).trim()
+            );
+            false
+        }
+        Err(e) => {
+            eprintln!("claude-panes: failed to run tmux capture-pane: {}", e);
+            false
+        }
     }
 }
 
@@ -86,8 +97,10 @@ pub fn is_active_content(text: &str) -> bool {
     let len = lines.len();
     let search_start = len.saturating_sub(15);
 
-    // Find separator bar position in the bottom ~15 lines
-    let separator = (search_start..len).find(|&i| is_horizontal_bar(lines[i]));
+    // Find the *last* separator bar in the bottom ~15 lines (there may be multiple)
+    let separator = (search_start..len)
+        .rev()
+        .find(|&i| is_horizontal_bar(lines[i]));
 
     // Inspect up to 3 lines above the separator (or bottom 3 lines if no separator)
     let check_end = separator.unwrap_or(len);
@@ -292,7 +305,7 @@ mod tests {
     #[test]
     fn braille_spinner_all_chars() {
         for ch in ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'] {
-            let text = format!("some output\n⠋ Working {}", ch);
+            let text = format!("{} Working", ch);
             assert!(
                 contains_braille_spinner(&text),
                 "should detect spinner char {}",
@@ -446,6 +459,43 @@ mod tests {
         // No separator: bottom 3 lines are plain text → no match
         let text = "line1\nline2\nline3";
         assert!(!is_active_content(text));
+    }
+
+    #[test]
+    fn active_content_down_arrow_token_counter() {
+        // "· ↓" pattern alone (without braille spinner) should be detected
+        let text = "content\n\
+                    · ↓ 4.6k tokens\n\
+                    ────────────────────────────\n\
+                    > ";
+        assert!(is_active_content(text));
+    }
+
+    #[test]
+    fn active_content_multiple_separators() {
+        // With multiple separators, only lines above the *last* separator are checked.
+        // Spinner is above the first separator but >3 lines above the last → not detected.
+        let text = "⠹ Working on something\n\
+                    output line\n\
+                    ────────────────────────────\n\
+                    middle content\n\
+                    more middle\n\
+                    even more\n\
+                    ────────────────────────────\n\
+                    > ";
+        assert!(!is_active_content(text));
+    }
+
+    #[test]
+    fn active_content_multiple_separators_spinner_near_last() {
+        // Spinner is within 3 lines above the last separator → detected
+        let text = "output\n\
+                    ────────────────────────────\n\
+                    middle\n\
+                    ⠹ Still working\n\
+                    ────────────────────────────\n\
+                    > ";
+        assert!(is_active_content(text));
     }
 }
 

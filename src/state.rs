@@ -63,7 +63,14 @@ pub fn read_state_files() -> Option<(Vec<ClaudeInstance>, HashSet<String>)> {
 
         let content = match fs::read_to_string(&entry) {
             Ok(s) => s,
-            Err(_) => continue,
+            Err(e) => {
+                eprintln!(
+                    "claude-panes: failed to read state file {}: {}",
+                    entry.display(),
+                    e
+                );
+                continue;
+            }
         };
         let content = content.trim();
         if content.is_empty() {
@@ -83,42 +90,33 @@ pub fn read_state_files() -> Option<(Vec<ClaudeInstance>, HashSet<String>)> {
             bell_ids.insert(pane_id.clone());
         }
 
-        // Status correction (three cases):
-        //
-        // 1. Working/Waiting → Idle: shell is foreground (Claude exited)
-        //    Permanent: rewrite state file.
-        //
-        // 2. Working/Waiting → Idle: mtime stale + no activity in title/content
-        //    Temporary: do NOT rewrite file. Re-check next cycle so that
-        //    a resumed tool call (hook writes ▶) is picked up immediately.
-        //
-        // 3. Idle → Working: command is not a shell AND content shows activity
-        //    Recovers from incorrect idle correction (case 2 was wrong,
-        //    or old binary had already rewritten the file).
-        let status =
-            if (status == Status::Working || status == Status::Waiting) && is_shell(&command) {
-                // Case 1: Claude exited → permanent idle
-                if !is_symlink(&entry) {
-                    let _ = fs::write(&entry, format!("○ {}", project));
+        // Lazy-evaluate expensive tmux::has_spinner_in_content only when needed
+        let shell = is_shell(&command);
+        let stale = is_stale_mtime(&entry);
+        let active_spinner = is_active_spinner(&title);
+        let needs_spinner_check = (!shell
+            && (status == Status::Working || status == Status::Waiting)
+            && stale
+            && !active_spinner)
+            || (status == Status::Idle && !shell);
+        let spinner_content = needs_spinner_check && tmux::has_spinner_in_content(&pane_id);
+
+        let action = correct_status(&status, shell, stale, active_spinner, spinner_content);
+        let status = match action {
+            CorrectionAction::PermanentIdle => {
+                if let Err(e) = fs::write(&entry, format!("○ {}", project)) {
+                    eprintln!(
+                        "claude-panes: failed to write state file {}: {}",
+                        entry.display(),
+                        e
+                    );
                 }
                 Status::Idle
-            } else if (status == Status::Working || status == Status::Waiting)
-                && is_stale_mtime(&entry)
-                && !is_active_spinner(&title)
-                && !tmux::has_spinner_in_content(&pane_id)
-            {
-                // Case 2: likely idle, but don't rewrite file
-                Status::Idle
-            } else if status == Status::Idle
-                && !is_shell(&command)
-                && tmux::has_spinner_in_content(&pane_id)
-            {
-                // Case 3: content shows active processing → Working (in memory only)
-                // Don't rewrite file: when content becomes inactive, immediately revert to Idle
-                Status::Working
-            } else {
-                status
-            };
+            }
+            CorrectionAction::TemporaryIdle => Status::Idle,
+            CorrectionAction::OverrideWorking => Status::Working,
+            CorrectionAction::Keep => status,
+        };
 
         let last_prompt = read_last_prompt(&pane_id);
 
@@ -216,10 +214,56 @@ fn read_last_prompt(pane_id: &str) -> String {
 }
 
 /// Get the state directory path (~/.claude/pane-state).
-/// Returns None if home directory cannot be determined.
+/// Returns None if home directory cannot be determined or if the path is a symlink.
 fn state_dir() -> Option<String> {
     let home = dirs::home_dir()?;
-    Some(format!("{}/.claude/pane-state", home.display()))
+    let dir = format!("{}/.claude/pane-state", home.display());
+    let path = Path::new(&dir);
+    // Reject if the directory itself is a symlink (prevents glob over attacker-controlled dir)
+    if path.exists() && is_symlink(path) {
+        eprintln!(
+            "claude-panes: refusing to use state directory: {} is a symlink",
+            dir
+        );
+        return None;
+    }
+    Some(dir)
+}
+
+/// Result of status correction logic (pure, no I/O).
+#[derive(Debug, Clone, PartialEq)]
+enum CorrectionAction {
+    /// Rewrite state file to idle (case 1: shell is foreground)
+    PermanentIdle,
+    /// Temporarily treat as idle without rewriting (case 2: stale mtime)
+    TemporaryIdle,
+    /// Override to Working (case 3: content shows activity)
+    OverrideWorking,
+    /// Keep original status
+    Keep,
+}
+
+/// Pure function: determine what status correction to apply.
+fn correct_status(
+    status: &Status,
+    is_shell_cmd: bool,
+    is_stale: bool,
+    has_active_spinner: bool,
+    has_spinner_content: bool,
+) -> CorrectionAction {
+    if (*status == Status::Working || *status == Status::Waiting) && is_shell_cmd {
+        CorrectionAction::PermanentIdle
+    } else if (*status == Status::Working || *status == Status::Waiting)
+        && is_stale
+        && !has_active_spinner
+        && !has_spinner_content
+    {
+        CorrectionAction::TemporaryIdle
+    } else if *status == Status::Idle && !is_shell_cmd && has_spinner_content {
+        CorrectionAction::OverrideWorking
+    } else {
+        CorrectionAction::Keep
+    }
 }
 
 /// Check if the pane title contains a braille spinner character,
@@ -491,6 +535,74 @@ mod tests {
     #[test]
     fn symlink_nonexistent() {
         assert!(is_symlink(Path::new("/tmp/claude-panes-nonexistent")));
+    }
+
+    // --- correct_status ---
+
+    #[test]
+    fn correct_status_case1_shell_foreground() {
+        // Working + shell → PermanentIdle
+        assert_eq!(
+            correct_status(&Status::Working, true, false, false, false),
+            CorrectionAction::PermanentIdle
+        );
+        // Waiting + shell → PermanentIdle
+        assert_eq!(
+            correct_status(&Status::Waiting, true, false, false, false),
+            CorrectionAction::PermanentIdle
+        );
+    }
+
+    #[test]
+    fn correct_status_case2_stale_no_activity() {
+        // Working + not shell + stale + no spinner anywhere → TemporaryIdle
+        assert_eq!(
+            correct_status(&Status::Working, false, true, false, false),
+            CorrectionAction::TemporaryIdle
+        );
+        // With active spinner in title → Keep (not idle)
+        assert_eq!(
+            correct_status(&Status::Working, false, true, true, false),
+            CorrectionAction::Keep
+        );
+        // With spinner in content → Keep (not idle)
+        assert_eq!(
+            correct_status(&Status::Working, false, true, false, true),
+            CorrectionAction::Keep
+        );
+    }
+
+    #[test]
+    fn correct_status_case3_idle_with_activity() {
+        // Idle + not shell + spinner in content → OverrideWorking
+        assert_eq!(
+            correct_status(&Status::Idle, false, false, false, true),
+            CorrectionAction::OverrideWorking
+        );
+        // Idle + shell + spinner → Keep (already idle, shell confirms it)
+        assert_eq!(
+            correct_status(&Status::Idle, true, false, false, true),
+            CorrectionAction::Keep
+        );
+    }
+
+    #[test]
+    fn correct_status_keep_unchanged() {
+        // Idle + not shell + no spinner → Keep
+        assert_eq!(
+            correct_status(&Status::Idle, false, false, false, false),
+            CorrectionAction::Keep
+        );
+        // Error status → Keep (never corrected)
+        assert_eq!(
+            correct_status(&Status::Error, false, false, false, false),
+            CorrectionAction::Keep
+        );
+        // Working + not shell + not stale → Keep
+        assert_eq!(
+            correct_status(&Status::Working, false, false, false, false),
+            CorrectionAction::Keep
+        );
     }
 
     // --- orphan file handling ---
